@@ -405,3 +405,54 @@ async def eligible_categories(organizer_id:uuid.UUID,event_id:uuid.UUID,athlete_
       ORDER BY c.modality,c.is_absolute,c.max_weight_grams,c.name LIMIT 500
     """,organizer_id,event_id,athlete["sex"],athlete["belt"],athlete["birth_date"].year,athlete["weight_grams"],athlete_id)
     return {"items":[dict(x) for x in rows]}
+
+class EntryChange(BaseModel):
+    organizer_id:uuid.UUID
+    category_id:uuid.UUID
+    base_cents:int=Field(ge=0,le=100000000)
+
+class EntryCancel(BaseModel):
+    organizer_id:uuid.UUID
+
+@router.patch("/entries/{entry_id}")
+async def edit_entry(entry_id:uuid.UUID,p:EntryChange,request:Request):
+    require_origin(request)
+    user=await authorized(request,p.organizer_id,"organizer.registrations.manage")
+    async with request.app.state.pool.acquire() as conn:
+      async with conn.transaction():
+        entry=await conn.fetchrow("""SELECT e.*,v.status event_status FROM public.sport_entries e
+          JOIN public.sport_events v ON v.id=e.event_id
+          WHERE e.id=$1 AND e.organizer_id=$2 FOR UPDATE OF e""",entry_id,p.organizer_id)
+        if not entry:raise HTTPException(404,"Inscrição não encontrada")
+        if entry["payment_status"]!="pending":raise HTTPException(409,"Inscrição com pagamento confirmado ou cancelada exige revisão financeira; edição bloqueada")
+        if entry["event_status"] in ("closed","cancelled"):raise HTTPException(409,"Campeonato encerrado")
+        athlete=await conn.fetchrow("SELECT birth_date,belt,weight_grams,sex FROM public.sport_athletes WHERE id=$1 AND organizer_id=$2",entry["athlete_id"],p.organizer_id)
+        cat=await conn.fetchrow("""SELECT belt,sex,min_weight_grams,max_weight_grams,min_birth_year,max_birth_year
+          FROM public.sport_categories WHERE id=$1 AND event_id=$2 AND organizer_id=$3""",p.category_id,entry["event_id"],p.organizer_id)
+        if not cat:raise HTTPException(404,"Categoria não encontrada neste evento")
+        if not athlete or not athlete["sex"] or athlete["sex"]!=cat["sex"] or athlete["belt"].casefold()!=cat["belt"].casefold() or not(cat["min_weight_grams"]<=athlete["weight_grams"]<=cat["max_weight_grams"]) or not(cat["min_birth_year"]<=athlete["birth_date"].year<=cat["max_birth_year"]):
+            raise HTTPException(422,"Categoria incompatível com sexo, faixa, idade ou peso do atleta")
+        try:
+            await conn.execute("UPDATE public.sport_entries SET category_id=$1,base_cents=$2 WHERE id=$3 AND organizer_id=$4",p.category_id,p.base_cents,entry_id,p.organizer_id)
+        except Exception as e:
+            if getattr(e,"sqlstate",None)=="23505":raise HTTPException(409,"Atleta já possui inscrição nesta categoria")
+            raise
+        await conn.execute("""INSERT INTO public.finance_audit(organizer_id,actor_user_id,action,reference_id)
+          VALUES($1,$2,$3,$4)""",p.organizer_id,user.user_id,
+          "sport_entry_edited:"+str(entry["category_id"])+":"+str(entry["base_cents"])+"->"+str(p.category_id)+":"+str(p.base_cents),entry_id)
+    return {"ok":True}
+
+@router.post("/entries/{entry_id}/cancel")
+async def cancel_entry(entry_id:uuid.UUID,p:EntryCancel,request:Request):
+    require_origin(request)
+    user=await authorized(request,p.organizer_id,"organizer.registrations.manage")
+    async with request.app.state.pool.acquire() as conn:
+      async with conn.transaction():
+        entry=await conn.fetchrow("SELECT payment_status FROM public.sport_entries WHERE id=$1 AND organizer_id=$2 FOR UPDATE",entry_id,p.organizer_id)
+        if not entry:raise HTTPException(404,"Inscrição não encontrada")
+        if entry["payment_status"]=="cancelled":raise HTTPException(409,"Inscrição já cancelada")
+        if entry["payment_status"]!="pending":raise HTTPException(409,"Pagamento já confirmado. É necessária revisão financeira antes do cancelamento")
+        await conn.execute("""UPDATE public.sport_entries SET payment_status='cancelled',eligible=false WHERE id=$1 AND organizer_id=$2""",entry_id,p.organizer_id)
+        await conn.execute("""INSERT INTO public.finance_audit(organizer_id,actor_user_id,action,reference_id)
+          VALUES($1,$2,'sport_entry_cancelled', $3)""",p.organizer_id,user.user_id,entry_id)
+    return {"ok":True}
