@@ -353,7 +353,7 @@ async def master_list_applications(request: Request,
 
 
 class ApplicationReview(BaseModel):
-    status: Literal["reviewing", "rejected"]
+    status: Literal["reviewing", "approved", "rejected"]
 
 
 @app.post("/api/platform/organizer-applications/{application_id}/review")
