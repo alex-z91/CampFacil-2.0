@@ -293,13 +293,15 @@ async def build_default_categories(conn,oid,eid,year,modalities,absolute):
         first=max(1900,year-high); last=min(2100,year-low)
         for sex in ("male","female"):
           for belt in belts:
+            previous_max=0
             for label,maxweight in weights[sex]:
               name=f"{modality.upper()} · {group.upper()} · {'Masculino' if sex=='male' else 'Feminino'} · {label}"
               result=await conn.execute("""INSERT INTO public.sport_categories
                   (organizer_id,event_id,name,belt,min_weight_grams,max_weight_grams,min_birth_year,max_birth_year,sex,modality,is_absolute)
-                  VALUES($1,$2,$3,$4,0,$5,$6,$7,$8,$9,false)
+                  VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,false)
                   ON CONFLICT (event_id,sex,belt,name) DO NOTHING""",
-                  oid,eid,name,belt,maxweight,first,last,sex,modality)
+                  oid,eid,name,belt,previous_max+1,maxweight,first,last,sex,modality)
+              previous_max=maxweight
               created+=result=="INSERT 0 1"
             if absolute:
               name=f"{modality.upper()} · {group.upper()} · {'Masculino' if sex=='male' else 'Feminino'} · Absoluto"
