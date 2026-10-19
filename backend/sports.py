@@ -173,7 +173,7 @@ async def list_athletes(organizer_id:uuid.UUID,request:Request):
 @router.get("/categories/{organizer_id}/{event_id}")
 async def list_categories(organizer_id:uuid.UUID,event_id:uuid.UUID,request:Request):
     await authorized(request,organizer_id,"organizer.events.read")
-    rows=await request.app.state.pool.fetch("""SELECT id::text,name,belt,min_weight_grams,max_weight_grams,min_birth_year,max_birth_year,sex,modality
+    rows=await request.app.state.pool.fetch("""SELECT id::text,name,belt,min_weight_grams,max_weight_grams,min_birth_year,max_birth_year,sex,modality,is_absolute
       FROM public.sport_categories WHERE organizer_id=$1 AND event_id=$2 ORDER BY name LIMIT 300""",organizer_id,event_id)
     return {"items":[dict(row) for row in rows]}
 
