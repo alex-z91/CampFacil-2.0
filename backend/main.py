@@ -200,3 +200,54 @@ async def logout(request: Request, response: Response):
     response.delete_cookie("meucamp_session", path="/", secure=True, httponly=True, samesite="lax")
     response.delete_cookie("meucamp_session_name", path="/", secure=True, httponly=True, samesite="lax")
     return {"ok": True}
+
+
+class ResetRequest(BaseModel):
+    email: str
+
+
+class ResetFinish(BaseModel):
+    token: str
+    password: str
+
+
+@app.post("/api/auth/request-password-reset")
+async def request_password_reset(payload: ResetRequest, request: Request):
+    trusted_request(request)
+    email = payload.email.strip().lower()
+    if not email or len(email) > 254 or "@" not in email:
+        raise HTTPException(400, "Informe um e-mail válido")
+    try:
+        async with httpx.AsyncClient(timeout=12, follow_redirects=False) as client:
+            result = await client.post(
+                f"{NEON_AUTH_URL}/request-password-reset",
+                json={"email": email, "redirectTo": FRONTEND_ORIGIN + "/redefinir-senha.html"},
+                headers={"origin": FRONTEND_ORIGIN, "content-type": "application/json"}
+            )
+    except httpx.RequestError:
+        raise HTTPException(503, "Serviço de recuperação indisponível")
+    if result.status_code >= 500:
+        raise HTTPException(503, "Serviço de recuperação indisponível")
+    # Resposta deliberadamente genérica para não revelar quais contas existem.
+    return {"ok": True, "message": "Se o e-mail estiver cadastrado e habilitado, você receberá instruções."}
+
+
+@app.post("/api/auth/reset-password")
+async def reset_password(payload: ResetFinish, request: Request):
+    trusted_request(request)
+    if not payload.token or len(payload.token) > 4096:
+        raise HTTPException(400, "Link inválido")
+    if len(payload.password) < 12 or len(payload.password) > 128:
+        raise HTTPException(400, "Use uma senha de 12 a 128 caracteres")
+    try:
+        async with httpx.AsyncClient(timeout=12, follow_redirects=False) as client:
+            result = await client.post(
+                f"{NEON_AUTH_URL}/reset-password",
+                json={"token": payload.token, "newPassword": payload.password},
+                headers={"origin": FRONTEND_ORIGIN, "content-type": "application/json"}
+            )
+    except httpx.RequestError:
+        raise HTTPException(503, "Serviço de recuperação indisponível")
+    if result.status_code != 200:
+        raise HTTPException(400, "Link expirado ou inválido. Solicite outro.")
+    return {"ok": True}
