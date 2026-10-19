@@ -1,4 +1,4 @@
-"""Camp Fácil 2.0 — API inicial de autenticação e autorização.
+"""MEUCAMP 2.0 — API inicial de autenticação e autorização.
 
 Execute atrás de HTTPS e proxy reverso na mesma origem do frontend.
 Não exponha credenciais DATABASE_URL ao navegador.
@@ -15,7 +15,7 @@ from pydantic import BaseModel
 DATABASE_URL = os.environ.get("DATABASE_URL")
 NEON_AUTH_URL = os.environ.get("NEON_AUTH_URL", "").rstrip("/")
 FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "https://meucamp.alexcoder.space")
-app = FastAPI(title="Camp Fácil API", version="0.2.0")
+app = FastAPI(title="MEUCAMP API", version="0.2.0")
 app.add_middleware(CORSMiddleware, allow_origins=[FRONTEND_ORIGIN], allow_credentials=True, allow_methods=["GET"], allow_headers=["Content-Type", "Authorization"])
 
 
