@@ -23,11 +23,17 @@ form.addEventListener('submit', async event => {
         remember: document.querySelector('#remember').checked
       })
     });
-    if (!response.ok) throw new Error(response.status === 401
-      ? 'Credenciais não reconhecidas. Confira o e-mail e a senha ou solicite a ativação da conta.'
-      : 'Não foi possível autenticar. Verifique o serviço da API e tente novamente.');
+    if (!response.ok) {
+      const failure = await response.json().catch(() => ({}));
+      throw new Error(response.status === 401 ? 'Credenciais não reconhecidas.' :
+        (failure.detail || 'Não foi possível autenticar.') + ' (HTTP ' + response.status + ')');
+    }
     const meResponse = await fetch(API + '/api/me', { credentials: 'include', cache: 'no-store' });
-    if (!meResponse.ok) throw new Error('Sessão iniciada, mas a verificação de acesso falhou.');
+    if (!meResponse.ok) {
+      const failure = await meResponse.json().catch(() => ({}));
+      throw new Error('Sessão não reconhecida pela API (HTTP ' + meResponse.status + '). ' +
+        (failure.detail || 'Verifique os cookies da sessão.'));
+    }
     const me = await meResponse.json();
     if (me.master) {
       feedback('Acesso Master validado. Redirecionando...');
