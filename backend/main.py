@@ -489,3 +489,57 @@ async def accept_organizer_invite(payload: dict, request: Request,
                 VALUES($1,$2,$3,'invite_accepted')
             """, invite["application_id"], invite["organizer_id"], user.user_id)
     return {"ok": True}
+
+class InviteSignup(BaseModel):
+    token: str
+    name: str = Field(min_length=2, max_length=120)
+    password: str = Field(min_length=12, max_length=128)
+
+
+@app.post("/api/auth/organizer-invite-signup")
+async def organizer_invite_signup(payload: InviteSignup, request: Request, response: Response):
+    trusted_request(request)
+    if not 30 <= len(payload.token) <= 256:
+        raise HTTPException(400, "Convite inválido")
+    record = await request.app.state.pool.fetchrow("""
+        SELECT email FROM public.access_invites
+        WHERE token_hash=$1 AND scope='organizer'
+          AND accepted_at IS NULL AND expires_at>now()
+    """, invitation_digest(payload.token))
+    if not record:
+        raise HTTPException(410, "Convite expirado ou utilizado")
+    try:
+        async with httpx.AsyncClient(timeout=12, follow_redirects=False) as client:
+            upstream = await client.post(
+                f"{NEON_AUTH_URL}/sign-up/email",
+                json={"email": record["email"], "password": payload.password,
+                      "name": payload.name.strip()},
+                headers={"origin": FRONTEND_ORIGIN, "content-type": "application/json"},
+            )
+    except httpx.RequestError:
+        raise HTTPException(503, "Cadastro de acesso temporariamente indisponível")
+    if upstream.status_code not in (200, 201):
+        raise HTTPException(409, "Não foi possível criar a conta. Se já existe, entre com sua senha.")
+    session_token, session_name = None, None
+    for header in upstream.headers.get_list("set-cookie"):
+        parsed = SimpleCookie()
+        try:
+            parsed.load(header)
+        except Exception:
+            continue
+        for name, morsel in parsed.items():
+            if valid_neon_cookie_name(name):
+                session_token, session_name = morsel.value, name
+                break
+    if not session_token:
+        return {"ok": True, "login_required": True}
+    async with httpx.AsyncClient(timeout=8, follow_redirects=False) as client:
+        checked = await client.get(
+            f"{NEON_AUTH_URL}/get-session",
+            headers={"cookie": f"{session_name}={session_token}"})
+    identity = checked.json().get("user") if checked.status_code == 200 else None
+    if not isinstance(identity, dict) or identity.get("email","").lower() != record["email"].lower():
+        return {"ok": True, "login_required": True}
+    response.set_cookie("meucamp_session", session_token, httponly=True, secure=True, samesite="lax", path="/", max_age=86400)
+    response.set_cookie("meucamp_session_name", session_name, httponly=True, secure=True, samesite="lax", path="/", max_age=86400)
+    return {"ok": True, "login_required": False}
