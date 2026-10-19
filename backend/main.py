@@ -537,7 +537,8 @@ async def organizer_invite_signup(payload: InviteSignup, request: Request, respo
         checked = await client.get(
             f"{NEON_AUTH_URL}/get-session",
             headers={"cookie": f"{session_name}={session_token}"})
-    identity = checked.json().get("user") if checked.status_code == 200 else None
+    data = checked.json() if checked.status_code == 200 else None
+    identity = data.get("user") if isinstance(data, dict) else None
     if not isinstance(identity, dict) or identity.get("email","").lower() != record["email"].lower():
         return {"ok": True, "login_required": True}
     response.set_cookie("meucamp_session", session_token, httponly=True, secure=True, samesite="lax", path="/", max_age=86400)
