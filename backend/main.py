@@ -4,6 +4,7 @@ Execute atrás de HTTPS e proxy reverso na mesma origem do frontend.
 Não exponha credenciais DATABASE_URL ao navegador.
 """
 import os
+import re
 from typing import Annotated
 
 import asyncpg
@@ -31,6 +32,11 @@ async def shutdown() -> None:
     await app.state.pool.close()
 
 
+def valid_neon_cookie_name(name: str) -> bool:
+    # Neon Auth pode usar um prefixo próprio; exigir nome sintaticamente seguro.
+    return bool(re.fullmatch(r"(?:__Secure-)?[A-Za-z0-9_.-]*session_token", name))
+
+
 class Identity(BaseModel):
     user_id: str
     email: str
@@ -40,7 +46,7 @@ async def authenticated(request: Request) -> Identity:
     # Validação no servidor a cada requisição. Não confie em roles enviadas pelo frontend.
     token = request.cookies.get("meucamp_session")
     cookie_name = request.cookies.get("meucamp_session_name", "better-auth.session_token")
-    if cookie_name not in ("better-auth.session_token", "__Secure-better-auth.session_token"):
+    if not valid_neon_cookie_name(cookie_name):
         raise HTTPException(401, "Cookie de sessão não reconhecido")
     cookie = f"{cookie_name}={token}" if token else ""
     if not cookie:
@@ -168,7 +174,7 @@ async def login(payload: LoginInput, request: Request, response: Response):
         except Exception:
             continue
         for name, morsel in parsed.items():
-            if name.endswith("session_token"):
+            if valid_neon_cookie_name(name):
                 session_token = morsel.value
                 session_cookie_name = name
                 break
@@ -203,7 +209,7 @@ async def logout(request: Request, response: Response):
     trusted_request(request)
     token = request.cookies.get("meucamp_session")
     cookie_name = request.cookies.get("meucamp_session_name", "better-auth.session_token")
-    if token and cookie_name in ("better-auth.session_token", "__Secure-better-auth.session_token"):
+    if token and valid_neon_cookie_name(cookie_name):
         try:
             async with httpx.AsyncClient(timeout=8.0, follow_redirects=False) as client:
                 await client.post(
