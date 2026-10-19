@@ -17,7 +17,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 NEON_AUTH_URL = os.environ.get("NEON_AUTH_URL", "").rstrip("/")
 FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "https://meucamp.alexcoder.space")
 app = FastAPI(title="MEUCAMP API", version="0.2.0")
-app.add_middleware(CORSMiddleware, allow_origins=[FRONTEND_ORIGIN], allow_credentials=True, allow_methods=["GET", "POST"], allow_headers=["Content-Type", "Authorization"])
+app.add_middleware(CORSMiddleware, allow_origins=[FRONTEND_ORIGIN], allow_credentials=True, allow_methods=["GET", "POST", "PATCH"], allow_headers=["Content-Type", "Authorization"])
 
 
 @app.on_event("startup")
