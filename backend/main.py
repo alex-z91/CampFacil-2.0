@@ -617,3 +617,16 @@ app.include_router(finance_router)
 
 from sports import router as sports_router
 app.include_router(sports_router)
+
+@app.get("/api/platform/overview-stats")
+async def platform_overview_stats(request: Request, user: Annotated[Identity, Depends(authenticated)]):
+    if not await has_platform_role(request.app.state.pool,user.user_id,"platform.organizers.read"):
+        raise HTTPException(403,"Acesso não autorizado")
+    row=await request.app.state.pool.fetchrow("""
+      SELECT (SELECT COUNT(*) FROM public.sport_events)::int events,
+             (SELECT COUNT(*) FROM public.sport_athletes)::int athletes,
+             (SELECT COUNT(*) FROM public.sport_entries)::int entries,
+             (SELECT COALESCE(SUM(amount_cents),0) FROM public.finance_ledger)::bigint commission_balance_cents
+    """)
+    return dict(row)
+
