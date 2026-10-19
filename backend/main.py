@@ -8,7 +8,7 @@ from typing import Annotated
 
 import asyncpg
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -16,7 +16,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 NEON_AUTH_URL = os.environ.get("NEON_AUTH_URL", "").rstrip("/")
 FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "https://meucamp.alexcoder.space")
 app = FastAPI(title="MEUCAMP API", version="0.2.0")
-app.add_middleware(CORSMiddleware, allow_origins=[FRONTEND_ORIGIN], allow_credentials=True, allow_methods=["GET"], allow_headers=["Content-Type", "Authorization"])
+app.add_middleware(CORSMiddleware, allow_origins=[FRONTEND_ORIGIN], allow_credentials=True, allow_methods=["GET", "POST"], allow_headers=["Content-Type", "Authorization"])
 
 
 @app.on_event("startup")
@@ -38,7 +38,8 @@ class Identity(BaseModel):
 
 async def authenticated(request: Request) -> Identity:
     # Validação no servidor a cada requisição. Não confie em roles enviadas pelo frontend.
-    cookie = request.headers.get("cookie", "")
+    token = request.cookies.get("meucamp_session")
+    cookie = f"better-auth.session_token={token}" if token else ""
     if not cookie:
         raise HTTPException(401, "Autenticação necessária")
     async with httpx.AsyncClient(timeout=8.0, follow_redirects=False) as client:
@@ -120,3 +121,74 @@ async def organizer_permissions(organizer_id: str, user: Annotated[Identity, Dep
       WHERE m.user_id=$1 AND m.organizer_id=$2::uuid AND m.status='active'
     """, user.user_id, organizer_id)
     return {"permissions": [r["permission_key"] for r in rows]}
+
+
+from pydantic import EmailStr
+from http.cookies import SimpleCookie
+
+
+class LoginInput(BaseModel):
+    email: str
+    password: str
+    remember: bool = True
+
+
+def trusted_request(request: Request) -> None:
+    origin = request.headers.get("origin")
+    if origin != FRONTEND_ORIGIN:
+        raise HTTPException(403, "Origem não autorizada")
+
+
+@app.post("/api/auth/login")
+async def login(payload: LoginInput, request: Request, response: Response):
+    trusted_request(request)
+    if not payload.email or not payload.password:
+        raise HTTPException(400, "E-mail e senha obrigatórios")
+    try:
+        async with httpx.AsyncClient(timeout=12.0, follow_redirects=False) as client:
+            result = await client.post(
+                f"{NEON_AUTH_URL}/sign-in/email",
+                json={"email": payload.email, "password": payload.password, "rememberMe": payload.remember},
+                headers={"origin": FRONTEND_ORIGIN, "content-type": "application/json"},
+            )
+    except httpx.RequestError:
+        raise HTTPException(503, "Serviço de autenticação temporariamente indisponível")
+    if result.status_code != 200:
+        raise HTTPException(401, "Credenciais inválidas ou conta ainda não habilitada")
+    # O cookie de identidade permanece exclusivamente em HttpOnly; não enviamos token no JSON.
+    session_token = None
+    for header in result.headers.get_list("set-cookie"):
+        parsed = SimpleCookie()
+        try:
+            parsed.load(header)
+        except Exception:
+            continue
+        for name, morsel in parsed.items():
+            if name.endswith("session_token"):
+                session_token = morsel.value
+                break
+    if not session_token:
+        raise HTTPException(502, "O provedor não retornou um cookie de sessão")
+    response.set_cookie(
+        "meucamp_session", session_token, httponly=True, secure=True,
+        samesite="lax", path="/", max_age=60 * 60 * 24 * (30 if payload.remember else 1),
+    )
+    # É apenas autenticação; permissões permanecem verificadas pelas rotas administrativas.
+    return {"ok": True}
+
+
+@app.post("/api/auth/logout")
+async def logout(request: Request, response: Response):
+    trusted_request(request)
+    token = request.cookies.get("meucamp_session")
+    if token:
+        try:
+            async with httpx.AsyncClient(timeout=8.0, follow_redirects=False) as client:
+                await client.post(
+                    f"{NEON_AUTH_URL}/sign-out",
+                    headers={"cookie": f"better-auth.session_token={token}", "origin": FRONTEND_ORIGIN},
+                )
+        except httpx.RequestError:
+            pass
+    response.delete_cookie("meucamp_session", path="/", secure=True, httponly=True, samesite="lax")
+    return {"ok": True}
