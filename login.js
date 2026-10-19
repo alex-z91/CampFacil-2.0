@@ -31,8 +31,9 @@ form.addEventListener('submit', async event => {
     const meResponse = await fetch(API + '/api/me', { credentials: 'include', cache: 'no-store' });
     if (!meResponse.ok) {
       const failure = await meResponse.json().catch(() => ({}));
-      throw new Error('Sessão não reconhecida pela API (HTTP ' + meResponse.status + '). ' +
-        (failure.detail || 'Verifique os cookies da sessão.'));
+      const diagnosis = await fetch(API + '/api/auth/session-check', {credentials:'include',cache:'no-store'}).then(r=>r.json()).catch(()=>null);
+      const detail = diagnosis ? (diagnosis.cookie_present ? 'Cookie presente; Neon recusou ou não confirmou a sessão.' : 'Cookie ausente no navegador ou não enviado à API.') : 'Não foi possível verificar cookies.';
+      throw new Error('Sessão não reconhecida (HTTP ' + meResponse.status + '). ' + (failure.detail || '') + ' ' + detail);
     }
     const me = await meResponse.json();
     if (me.master) {
