@@ -82,15 +82,15 @@ async def external_registration(p: ExternalRegistration,request:Request):
         org=await conn.fetchrow("SELECT id,status FROM public.organizers WHERE id=$1 FOR UPDATE",p.organizer_id)
         if not org or org["status"]!="active":
             raise HTTPException(409,"Organização ainda não está ativa")
+        existing=await conn.fetchrow("SELECT id::text,commission_cents FROM public.finance_registrations WHERE organizer_id=$1 AND reference=$2",p.organizer_id,p.reference)
+        if existing:
+            return {"id":existing["id"],"commission_cents":existing["commission_cents"],"duplicate":True}
         cfg=await policy(conn,p.organizer_id)
         cost=commission(p.base_cents,cfg["percent_bps"],cfg["fixed_cents"])
         cap=cfg["debt_cap_cents"] if cfg["debt_cap_cents"] is not None else cap_for_ticket(p.base_cents)
         debt=await conn.fetchval("SELECT COALESCE(SUM(amount_cents),0) FROM public.finance_ledger WHERE organizer_id=$1",p.organizer_id)
         if max(0,debt)+cost>cap:
             raise HTTPException(409,"Limite de comissão presencial atingido. Quite parte da dívida antes de confirmar novas inscrições.")
-        existing=await conn.fetchrow("SELECT id::text,commission_cents FROM public.finance_registrations WHERE organizer_id=$1 AND reference=$2",p.organizer_id,p.reference)
-        if existing:
-            return {"id":existing["id"],"commission_cents":existing["commission_cents"],"duplicate":True}
         row=await conn.fetchrow("""INSERT INTO public.finance_registrations
             (organizer_id,reference,base_cents,commission_cents,athlete_fee_cents,payment_channel,payment_status,created_by)
             VALUES($1,$2,$3,$4,0,'external','confirmed',$5) RETURNING id::text""",
