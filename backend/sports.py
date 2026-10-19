@@ -312,3 +312,60 @@ async def build_default_categories(conn,oid,eid,year,modalities,absolute):
                   oid,eid,name,belt,first,last,sex,modality)
               created+=result=="INSERT 0 1"
     return created
+
+class CategoryUpdate(BaseModel):
+    organizer_id:uuid.UUID
+    name:str=Field(min_length=2,max_length=120)
+    belt:str=Field(min_length=2,max_length=40)
+    sex:Literal["male","female"]
+    modality:Literal["gi","nogi"]
+    min_weight_grams:int=Field(ge=0,le=300000)
+    max_weight_grams:int=Field(ge=0,le=300000)
+    min_birth_year:int=Field(ge=1900,le=2100)
+    max_birth_year:int=Field(ge=1900,le=2100)
+
+@router.patch("/categories/{category_id}")
+async def update_category(category_id:uuid.UUID,p:CategoryUpdate,request:Request):
+    require_origin(request)
+    await authorized(request,p.organizer_id,"organizer.events.manage")
+    if p.min_weight_grams>p.max_weight_grams or p.min_birth_year>p.max_birth_year:
+        raise HTTPException(422,"Intervalos inválidos")
+    async with request.app.state.pool.acquire() as conn:
+      async with conn.transaction():
+        cat=await conn.fetchrow("""SELECT c.*,e.status AS event_status FROM public.sport_categories c
+          JOIN public.sport_events e ON e.id=c.event_id
+          WHERE c.id=$1 AND c.organizer_id=$2 FOR UPDATE OF c""",category_id,p.organizer_id)
+        if not cat: raise HTTPException(404,"Categoria não encontrada")
+        if cat["event_status"] in ("closed","cancelled"):raise HTTPException(409,"Evento encerrado")
+        count=await conn.fetchval("SELECT COUNT(*) FROM public.sport_entries WHERE category_id=$1",category_id)
+        if count:raise HTTPException(409,"Esta categoria possui inscrições. Não é possível alterar seus critérios; crie uma nova categoria.")
+        if cat["is_absolute"] and (p.min_weight_grams!=0 or p.max_weight_grams!=300000):
+            raise HTTPException(422,"O absoluto precisa permanecer sem limite de peso")
+        try:
+            await conn.execute("""UPDATE public.sport_categories SET name=$1,belt=$2,sex=$3,modality=$4,
+               min_weight_grams=$5,max_weight_grams=$6,min_birth_year=$7,max_birth_year=$8
+               WHERE id=$9 AND organizer_id=$10""",p.name.strip(),p.belt.strip(),p.sex,p.modality,
+               p.min_weight_grams,p.max_weight_grams,p.min_birth_year,p.max_birth_year,category_id,p.organizer_id)
+        except Exception as e:
+            if getattr(e,"sqlstate",None)=="23505":raise HTTPException(409,"Já existe uma categoria equivalente")
+            raise
+    return {"ok":True}
+
+class CategoryDelete(BaseModel):
+    organizer_id:uuid.UUID
+
+@router.post("/categories/{category_id}/delete")
+async def delete_category(category_id:uuid.UUID,p:CategoryDelete,request:Request):
+    require_origin(request)
+    await authorized(request,p.organizer_id,"organizer.events.manage")
+    async with request.app.state.pool.acquire() as conn:
+      async with conn.transaction():
+        cat=await conn.fetchrow("""SELECT c.id,e.status event_status FROM public.sport_categories c
+           JOIN public.sport_events e ON e.id=c.event_id
+           WHERE c.id=$1 AND c.organizer_id=$2 FOR UPDATE OF c""",category_id,p.organizer_id)
+        if not cat:raise HTTPException(404,"Categoria não encontrada")
+        if cat["event_status"] in ("closed","cancelled"):raise HTTPException(409,"Evento encerrado")
+        count=await conn.fetchval("SELECT COUNT(*) FROM public.sport_entries WHERE category_id=$1",category_id)
+        if count:raise HTTPException(409,"Categoria com inscrições não pode ser excluída. Remaneje os atletas primeiro.")
+        await conn.execute("DELETE FROM public.sport_categories WHERE id=$1 AND organizer_id=$2",category_id,p.organizer_id)
+    return {"ok":True}
