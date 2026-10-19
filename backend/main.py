@@ -5,13 +5,13 @@ Não exponha credenciais DATABASE_URL ao navegador.
 """
 import os
 import re
-from typing import Annotated
+from typing import Annotated, Literal
 
 import asyncpg
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 NEON_AUTH_URL = os.environ.get("NEON_AUTH_URL", "").rstrip("/")
@@ -279,3 +279,101 @@ async def session_check(request: Request):
     session_present = bool(request.cookies.get("meucamp_session"))
     name_present = bool(request.cookies.get("meucamp_session_name"))
     return {"cookie_present": session_present, "cookie_name_present": name_present}
+
+# Solicitações de organizador — sem criação automática de contas ou papéis.
+class OrganizerApplicationIn(BaseModel):
+    organization_name: str = Field(min_length=3, max_length=180)
+    contact_name: str = Field(min_length=3, max_length=180)
+    email: str = Field(min_length=5, max_length=254)
+    phone: str = Field(min_length=8, max_length=32)
+    city: str = Field(min_length=2, max_length=120)
+    state: str = Field(min_length=2, max_length=2)
+    document_number: str | None = Field(default=None, max_length=18)
+    consent: bool
+
+
+def normalize_application(data: OrganizerApplicationIn) -> dict:
+    import re as _re
+    if not data.consent:
+        raise HTTPException(422, "É necessário aceitar o tratamento dos dados para contato")
+    email = data.email.strip().lower()
+    phone = _re.sub(r"\D", "", data.phone)
+    state = data.state.upper().strip()
+    doc = _re.sub(r"\D", "", data.document_number or "") or None
+    if "@" not in email or "." not in email.split("@")[-1] or not 10 <= len(phone) <= 13:
+        raise HTTPException(422, "E-mail ou telefone inválido")
+    if not _re.fullmatch(r"[A-Z]{2}", state):
+        raise HTTPException(422, "UF inválida")
+    return dict(organization_name=data.organization_name.strip(),
+                contact_name=data.contact_name.strip(), email=email,
+                phone=phone, city=data.city.strip(), state=state,
+                document_number=doc)
+
+
+async def submit_application(pool, data: OrganizerApplicationIn, source: str):
+    p = normalize_application(data)
+    try:
+        row = await pool.fetchrow("""
+            INSERT INTO public.organizer_applications
+                (organization_name,contact_name,email,phone,city,state,document_number,source)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id::text
+        """, p["organization_name"], p["contact_name"], p["email"],
+             p["phone"], p["city"], p["state"], p["document_number"], source)
+    except asyncpg.UniqueViolationError:
+        raise HTTPException(409, "Já existe solicitação em análise para esta organização e e-mail")
+    return {"ok": True, "id": row["id"], "status": "requested"}
+
+
+@app.post("/api/public/organizer-applications", status_code=201)
+async def create_application(payload: OrganizerApplicationIn, request: Request):
+    trusted_request(request)
+    return await submit_application(request.app.state.pool, payload, "public")
+
+
+@app.post("/api/platform/organizer-applications", status_code=201)
+async def master_create_application(payload: OrganizerApplicationIn, request: Request,
+                                    user: Annotated[Identity, Depends(authenticated)]):
+    trusted_request(request)
+    if not await has_platform_role(request.app.state.pool, user.user_id, "platform.organizers.manage"):
+        raise HTTPException(403, "Acesso não autorizado")
+    return await submit_application(request.app.state.pool, payload, "master")
+
+
+@app.get("/api/platform/organizer-applications")
+async def master_list_applications(request: Request,
+                                   user: Annotated[Identity, Depends(authenticated)]):
+    if not await has_platform_role(request.app.state.pool, user.user_id, "platform.organizers.read"):
+        raise HTTPException(403, "Acesso não autorizado")
+    rows = await request.app.state.pool.fetch("""
+        SELECT id::text,organization_name,contact_name,email,phone,city,state,
+               source,status,created_at
+        FROM public.organizer_applications ORDER BY created_at DESC LIMIT 100
+    """)
+    return {"items": [dict(r) for r in rows]}
+
+
+class ApplicationReview(BaseModel):
+    status: Literal["reviewing", "rejected"]
+
+
+@app.post("/api/platform/organizer-applications/{application_id}/review")
+async def master_review_application(application_id: str, payload: ApplicationReview,
+                                    request: Request,
+                                    user: Annotated[Identity, Depends(authenticated)]):
+    trusted_request(request)
+    if not await has_platform_role(request.app.state.pool, user.user_id, "platform.organizers.manage"):
+        raise HTTPException(403, "Acesso não autorizado")
+    import uuid
+    try:
+        parsed_id = uuid.UUID(application_id)
+    except ValueError:
+        raise HTTPException(404, "Solicitação não encontrada")
+    result = await request.app.state.pool.fetchrow("""
+        UPDATE public.organizer_applications
+        SET status=$1, reviewed_by=$2, reviewed_at=now()
+        WHERE id=$3 AND status IN ('requested','reviewing')
+        RETURNING id::text,status
+    """, payload.status, user.user_id, parsed_id)
+    if not result:
+        raise HTTPException(409, "Solicitação não encontrada ou já encerrada")
+    return dict(result)
