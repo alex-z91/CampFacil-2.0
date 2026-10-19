@@ -19,6 +19,7 @@ class AthleteIn(BaseModel):
     team:str=Field(default="",max_length=120)
     belt:str=Field(min_length=2,max_length=40)
     weight_grams:int=Field(ge=10000,le=300000)
+    sex:Literal['male','female']
 class CategoryIn(BaseModel):
     organizer_id:uuid.UUID
     event_id:uuid.UUID
@@ -28,6 +29,7 @@ class CategoryIn(BaseModel):
     max_weight_grams:int=Field(ge=0,le=300000)
     min_birth_year:int=Field(ge=1900,le=2100)
     max_birth_year:int=Field(ge=1900,le=2100)
+    sex:Literal['male','female']
 class EntryIn(BaseModel):
     organizer_id:uuid.UUID
     event_id:uuid.UUID
@@ -62,8 +64,8 @@ async def create_athlete(p:AthleteIn,request:Request):
     user=await authorized(request,p.organizer_id,"organizer.registrations.manage")
     if p.birth_date>date.today():raise HTTPException(422,"Data de nascimento inválida")
     row=await request.app.state.pool.fetchrow("""INSERT INTO public.sport_athletes
-        (organizer_id,full_name,birth_date,team,belt,weight_grams,created_by)
-        VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id::text""",p.organizer_id,p.full_name.strip(),p.birth_date,p.team.strip(),p.belt.strip(),p.weight_grams,user.user_id)
+        (organizer_id,full_name,birth_date,team,belt,weight_grams,created_by,sex)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id::text""",p.organizer_id,p.full_name.strip(),p.birth_date,p.team.strip(),p.belt.strip(),p.weight_grams,user.user_id,p.sex)
     return dict(row)
 
 @router.post("/categories",status_code=201)
@@ -74,8 +76,8 @@ async def create_category(p:CategoryIn,request:Request):
         raise HTTPException(422,"Intervalo de categoria inválido")
     try:
         row=await request.app.state.pool.fetchrow("""INSERT INTO public.sport_categories
-          (organizer_id,event_id,name,belt,min_weight_grams,max_weight_grams,min_birth_year,max_birth_year)
-          VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id::text""",p.organizer_id,p.event_id,p.name.strip(),p.belt.strip(),p.min_weight_grams,p.max_weight_grams,p.min_birth_year,p.max_birth_year)
+          (organizer_id,event_id,name,belt,min_weight_grams,max_weight_grams,min_birth_year,max_birth_year,sex)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id::text""",p.organizer_id,p.event_id,p.name.strip(),p.belt.strip(),p.min_weight_grams,p.max_weight_grams,p.min_birth_year,p.max_birth_year,p.sex)
     except Exception as e:
         if getattr(e,"sqlstate",None)=="23503":raise HTTPException(404,"Evento não encontrado para esta organização")
         raise
@@ -88,10 +90,10 @@ async def create_entry(p:EntryIn,request:Request):
     async with request.app.state.pool.acquire() as conn:
         event=await conn.fetchrow("SELECT status FROM public.sport_events WHERE id=$1 AND organizer_id=$2",p.event_id,p.organizer_id)
         if not event or event["status"] in ("closed","cancelled"):raise HTTPException(409,"Evento indisponível")
-        athlete=await conn.fetchrow("SELECT birth_date,belt,weight_grams FROM public.sport_athletes WHERE id=$1 AND organizer_id=$2",p.athlete_id,p.organizer_id)
-        cat=await conn.fetchrow("SELECT belt,min_weight_grams,max_weight_grams,min_birth_year,max_birth_year FROM public.sport_categories WHERE id=$1 AND event_id=$2 AND organizer_id=$3",p.category_id,p.event_id,p.organizer_id)
+        athlete=await conn.fetchrow("SELECT birth_date,belt,weight_grams,sex FROM public.sport_athletes WHERE id=$1 AND organizer_id=$2",p.athlete_id,p.organizer_id)
+        cat=await conn.fetchrow("SELECT belt,min_weight_grams,max_weight_grams,min_birth_year,max_birth_year,sex FROM public.sport_categories WHERE id=$1 AND event_id=$2 AND organizer_id=$3",p.category_id,p.event_id,p.organizer_id)
         if not athlete or not cat:raise HTTPException(404,"Atleta ou categoria não encontrado")
-        if athlete["belt"].casefold()!=cat["belt"].casefold() or not(cat["min_weight_grams"]<=athlete["weight_grams"]<=cat["max_weight_grams"]) or not(cat["min_birth_year"]<=athlete["birth_date"].year<=cat["max_birth_year"]):
+        if not athlete["sex"] or athlete["sex"]!=cat["sex"] or athlete["belt"].casefold()!=cat["belt"].casefold() or not(cat["min_weight_grams"]<=athlete["weight_grams"]<=cat["max_weight_grams"]) or not(cat["min_birth_year"]<=athlete["birth_date"].year<=cat["max_birth_year"]):
             raise HTTPException(422,"Atleta fora dos critérios desta categoria")
         try:
             row=await conn.fetchrow("""INSERT INTO public.sport_entries
@@ -152,14 +154,14 @@ class AthleteEdit(BaseModel):
 @router.get("/athletes/{organizer_id}")
 async def list_athletes(organizer_id:uuid.UUID,request:Request):
     await authorized(request,organizer_id,"organizer.events.read")
-    rows=await request.app.state.pool.fetch("""SELECT id::text,full_name,birth_date,team,belt,weight_grams
+    rows=await request.app.state.pool.fetch("""SELECT id::text,full_name,birth_date,team,belt,weight_grams,sex
       FROM public.sport_athletes WHERE organizer_id=$1 ORDER BY created_at DESC LIMIT 500""",organizer_id)
     return {"items":[dict(row) for row in rows]}
 
 @router.get("/categories/{organizer_id}/{event_id}")
 async def list_categories(organizer_id:uuid.UUID,event_id:uuid.UUID,request:Request):
     await authorized(request,organizer_id,"organizer.events.read")
-    rows=await request.app.state.pool.fetch("""SELECT id::text,name,belt,min_weight_grams,max_weight_grams,min_birth_year,max_birth_year
+    rows=await request.app.state.pool.fetch("""SELECT id::text,name,belt,min_weight_grams,max_weight_grams,min_birth_year,max_birth_year,sex
       FROM public.sport_categories WHERE organizer_id=$1 AND event_id=$2 ORDER BY name LIMIT 300""",organizer_id,event_id)
     return {"items":[dict(row) for row in rows]}
 
@@ -187,3 +189,45 @@ async def edit_athlete(organizer_id:uuid.UUID,athlete_id:uuid.UUID,p:AthleteEdit
           SET full_name=$1,team=$2,birth_date=$3,belt=$4,weight_grams=$5
           WHERE id=$6 AND organizer_id=$7""",p.full_name.strip(),p.team.strip(),p.birth_date,p.belt.strip(),p.weight_grams,athlete_id,organizer_id)
     return {"ok":True}
+
+# Templates inspired by IBJJF adult/master Gi divisions. Weight includes kimono.
+GI_WEIGHTS = {
+ "male":[("Galo",57500),("Pluma",64000),("Pena",70000),("Leve",76000),("Médio",82300),("Meio-pesado",88300),("Pesado",94300),("Superpesado",100500),("Pesadíssimo",300000)],
+ "female":[("Galo",48500),("Pluma",53500),("Pena",58500),("Leve",64000),("Médio",69000),("Meio-pesado",74000),("Pesado",79300),("Superpesado",300000)]
+}
+class TemplateBatch(BaseModel):
+    organizer_id:uuid.UUID
+    event_id:uuid.UUID
+    sex:Literal["male","female"]
+    age_group:Literal["adult","master1","master2","master3","master4","master5","master6","master7"]
+    belts:list[Literal["Branca","Azul","Roxa","Marrom","Preta"]]=Field(min_length=1,max_length=5)
+
+@router.post("/categories/templates",status_code=201)
+async def create_category_templates(p:TemplateBatch,request:Request):
+    require_origin(request)
+    await authorized(request,p.organizer_id,"organizer.events.manage")
+    pool=request.app.state.pool
+    async with pool.acquire() as conn:
+      async with conn.transaction():
+        event=await conn.fetchrow("SELECT event_date,status FROM public.sport_events WHERE id=$1 AND organizer_id=$2 FOR UPDATE",p.event_id,p.organizer_id)
+        if not event:raise HTTPException(404,"Evento não encontrado")
+        if event["status"] in ("closed","cancelled"):raise HTTPException(409,"Evento encerrado")
+        year=event["event_date"].year
+        ages={"adult":(18,120),"master1":(30,120),"master2":(36,120),"master3":(41,120),"master4":(46,120),"master5":(51,120),"master6":(56,120),"master7":(61,120)}
+        minage,maxage=ages[p.age_group]
+        # Masters can register in younger age divisions; age cap is intentionally open.
+        born_min=max(1900,year-maxage);born_max=min(2100,year-minage)
+        if p.age_group in ("master6","master7") and "Branca" in p.belts:
+            raise HTTPException(422,"Modelo IBJJF Master 6/7 não inclui faixa branca")
+        created=0
+        for belt in dict.fromkeys(p.belts):
+          for label,upper in GI_WEIGHTS[p.sex]:
+            name=p.age_group.upper()+" · "+("Masculino" if p.sex=="male" else "Feminino")+" · "+label
+            result=await conn.execute("""
+                INSERT INTO public.sport_categories
+                (organizer_id,event_id,name,belt,min_weight_grams,max_weight_grams,min_birth_year,max_birth_year,sex)
+                VALUES($1,$2,$3,$4,0,$5,$6,$7,$8)
+                ON CONFLICT (event_id,sex,belt,name) DO NOTHING
+            """,p.organizer_id,p.event_id,name,belt,upper,born_min,born_max,p.sex)
+            if result=="INSERT 0 1":created+=1
+    return {"created":created,"requested":len(dict.fromkeys(p.belts))*len(GI_WEIGHTS[p.sex]),"rules":"gi_weight_with_uniform","event_year":year}
