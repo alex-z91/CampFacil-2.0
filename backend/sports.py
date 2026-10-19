@@ -386,3 +386,22 @@ async def sync_event_categories(event_id:uuid.UUID,p:CategorySync,request:Reques
         modalities=[m for m,enabled in (("gi",event["has_gi"]),("nogi",event["has_nogi"])) if enabled]
         created=await build_default_categories(conn,p.organizer_id,event_id,event["event_date"].year,modalities,event["has_absolute"])
     return {"created":created,"message":"Categorias ausentes adicionadas sem modificar inscrições existentes"}
+
+@router.get("/eligible-categories/{organizer_id}/{event_id}/{athlete_id}")
+async def eligible_categories(organizer_id:uuid.UUID,event_id:uuid.UUID,athlete_id:uuid.UUID,request:Request):
+    await authorized(request,organizer_id,"organizer.events.read")
+    pool=request.app.state.pool
+    athlete=await pool.fetchrow("""SELECT birth_date,belt,weight_grams,sex FROM public.sport_athletes
+        WHERE id=$1 AND organizer_id=$2""",athlete_id,organizer_id)
+    if not athlete:raise HTTPException(404,"Atleta não encontrado")
+    rows=await pool.fetch("""SELECT c.id::text,c.name,c.belt,c.sex,c.modality,c.is_absolute,
+      c.min_weight_grams,c.max_weight_grams,c.min_birth_year,c.max_birth_year
+      FROM public.sport_categories c
+      WHERE c.organizer_id=$1 AND c.event_id=$2 AND c.sex=$3
+        AND lower(c.belt)=lower($4)
+        AND $5::int BETWEEN c.min_birth_year AND c.max_birth_year
+        AND $6::int BETWEEN c.min_weight_grams AND c.max_weight_grams
+        AND NOT EXISTS(SELECT 1 FROM public.sport_entries e WHERE e.athlete_id=$7 AND e.category_id=c.id AND e.payment_status<>'cancelled')
+      ORDER BY c.modality,c.is_absolute,c.max_weight_grams,c.name LIMIT 500
+    """,organizer_id,event_id,athlete["sex"],athlete["belt"],athlete["birth_date"].year,athlete["weight_grams"],athlete_id)
+    return {"items":[dict(x) for x in rows]}
