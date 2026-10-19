@@ -369,3 +369,20 @@ async def delete_category(category_id:uuid.UUID,p:CategoryDelete,request:Request
         if count:raise HTTPException(409,"Categoria com inscrições não pode ser excluída. Remaneje os atletas primeiro.")
         await conn.execute("DELETE FROM public.sport_categories WHERE id=$1 AND organizer_id=$2",category_id,p.organizer_id)
     return {"ok":True}
+
+class CategorySync(BaseModel):
+    organizer_id:uuid.UUID
+
+@router.post("/events/{event_id}/sync-categories")
+async def sync_event_categories(event_id:uuid.UUID,p:CategorySync,request:Request):
+    require_origin(request)
+    await authorized(request,p.organizer_id,"organizer.events.manage")
+    async with request.app.state.pool.acquire() as conn:
+      async with conn.transaction():
+        event=await conn.fetchrow("""SELECT * FROM public.sport_events
+            WHERE id=$1 AND organizer_id=$2 FOR UPDATE""",event_id,p.organizer_id)
+        if not event:raise HTTPException(404,"Evento não encontrado")
+        if event["status"] in ("closed","cancelled"):raise HTTPException(409,"Evento encerrado")
+        modalities=[m for m,enabled in (("gi",event["has_gi"]),("nogi",event["has_nogi"])) if enabled]
+        created=await build_default_categories(conn,p.organizer_id,event_id,event["event_date"].year,modalities,event["has_absolute"])
+    return {"created":created,"message":"Categorias ausentes adicionadas sem modificar inscrições existentes"}
