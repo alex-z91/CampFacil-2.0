@@ -39,7 +39,10 @@ class Identity(BaseModel):
 async def authenticated(request: Request) -> Identity:
     # Validação no servidor a cada requisição. Não confie em roles enviadas pelo frontend.
     token = request.cookies.get("meucamp_session")
-    cookie = f"better-auth.session_token={token}" if token else ""
+    cookie_name = request.cookies.get("meucamp_session_name", "better-auth.session_token")
+    if cookie_name not in ("better-auth.session_token", "__Secure-better-auth.session_token"):
+        raise HTTPException(401, "Sessão inválida")
+    cookie = f"{cookie_name}={token}" if token else ""
     if not cookie:
         raise HTTPException(401, "Autenticação necessária")
     async with httpx.AsyncClient(timeout=8.0, follow_redirects=False) as client:
@@ -157,6 +160,7 @@ async def login(payload: LoginInput, request: Request, response: Response):
         raise HTTPException(401, "Credenciais inválidas ou conta ainda não habilitada")
     # O cookie de identidade permanece exclusivamente em HttpOnly; não enviamos token no JSON.
     session_token = None
+    session_cookie_name = None
     for header in result.headers.get_list("set-cookie"):
         parsed = SimpleCookie()
         try:
@@ -166,6 +170,7 @@ async def login(payload: LoginInput, request: Request, response: Response):
         for name, morsel in parsed.items():
             if name.endswith("session_token"):
                 session_token = morsel.value
+                session_cookie_name = name
                 break
     if not session_token:
         raise HTTPException(502, "O provedor não retornou um cookie de sessão")
@@ -173,6 +178,7 @@ async def login(payload: LoginInput, request: Request, response: Response):
         "meucamp_session", session_token, httponly=True, secure=True,
         samesite="lax", path="/", max_age=60 * 60 * 24 * (30 if payload.remember else 1),
     )
+    response.set_cookie("meucamp_session_name", session_cookie_name, httponly=True, secure=True, samesite="lax", path="/", max_age=60 * 60 * 24 * (30 if payload.remember else 1))
     # É apenas autenticação; permissões permanecem verificadas pelas rotas administrativas.
     return {"ok": True}
 
@@ -181,14 +187,16 @@ async def login(payload: LoginInput, request: Request, response: Response):
 async def logout(request: Request, response: Response):
     trusted_request(request)
     token = request.cookies.get("meucamp_session")
-    if token:
+    cookie_name = request.cookies.get("meucamp_session_name", "better-auth.session_token")
+    if token and cookie_name in ("better-auth.session_token", "__Secure-better-auth.session_token"):
         try:
             async with httpx.AsyncClient(timeout=8.0, follow_redirects=False) as client:
                 await client.post(
                     f"{NEON_AUTH_URL}/sign-out",
-                    headers={"cookie": f"better-auth.session_token={token}", "origin": FRONTEND_ORIGIN},
+                    headers={"cookie": f"{cookie_name}={token}", "origin": FRONTEND_ORIGIN},
                 )
         except httpx.RequestError:
             pass
     response.delete_cookie("meucamp_session", path="/", secure=True, httponly=True, samesite="lax")
+    response.delete_cookie("meucamp_session_name", path="/", secure=True, httponly=True, samesite="lax")
     return {"ok": True}
