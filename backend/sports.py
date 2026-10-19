@@ -161,7 +161,7 @@ async def list_athletes(organizer_id:uuid.UUID,request:Request):
 @router.get("/categories/{organizer_id}/{event_id}")
 async def list_categories(organizer_id:uuid.UUID,event_id:uuid.UUID,request:Request):
     await authorized(request,organizer_id,"organizer.events.read")
-    rows=await request.app.state.pool.fetch("""SELECT id::text,name,belt,min_weight_grams,max_weight_grams,min_birth_year,max_birth_year,sex
+    rows=await request.app.state.pool.fetch("""SELECT id::text,name,belt,min_weight_grams,max_weight_grams,min_birth_year,max_birth_year,sex,modality
       FROM public.sport_categories WHERE organizer_id=$1 AND event_id=$2 ORDER BY name LIMIT 300""",organizer_id,event_id)
     return {"items":[dict(row) for row in rows]}
 
@@ -195,12 +195,17 @@ GI_WEIGHTS = {
  "male":[("Galo",57500),("Pluma",64000),("Pena",70000),("Leve",76000),("Médio",82300),("Meio-pesado",88300),("Pesado",94300),("Superpesado",100500),("Pesadíssimo",300000)],
  "female":[("Galo",48500),("Pluma",53500),("Pena",58500),("Leve",64000),("Médio",69000),("Meio-pesado",74000),("Pesado",79300),("Superpesado",300000)]
 }
+NO_GI_WEIGHTS = {
+ "male":[("Galo",55500),("Pluma",61500),("Pena",67500),("Leve",73500),("Médio",79500),("Meio-pesado",85500),("Pesado",91500),("Superpesado",97500),("Pesadíssimo",300000)],
+ "female":[("Galo",46500),("Pluma",51500),("Pena",56500),("Leve",61500),("Médio",66500),("Meio-pesado",71500),("Pesado",76500),("Superpesado",300000)]
+}
 class TemplateBatch(BaseModel):
     organizer_id:uuid.UUID
     event_id:uuid.UUID
     sex:Literal["male","female"]
     age_group:Literal["adult","master1","master2","master3","master4","master5","master6","master7"]
     belts:list[Literal["Branca","Azul","Roxa","Marrom","Preta"]]=Field(min_length=1,max_length=5)
+    modality:Literal["gi","nogi"]="gi"
 
 @router.post("/categories/templates",status_code=201)
 async def create_category_templates(p:TemplateBatch,request:Request):
@@ -221,13 +226,13 @@ async def create_category_templates(p:TemplateBatch,request:Request):
             raise HTTPException(422,"Modelo IBJJF Master 6/7 não inclui faixa branca")
         created=0
         for belt in dict.fromkeys(p.belts):
-          for label,upper in GI_WEIGHTS[p.sex]:
-            name=p.age_group.upper()+" · "+("Masculino" if p.sex=="male" else "Feminino")+" · "+label
+          for label,upper in (NO_GI_WEIGHTS if p.modality=="nogi" else GI_WEIGHTS)[p.sex]:
+            name=("NO-GI" if p.modality=="nogi" else "GI")+" · "+p.age_group.upper()+" · "+("Masculino" if p.sex=="male" else "Feminino")+" · "+label
             result=await conn.execute("""
                 INSERT INTO public.sport_categories
-                (organizer_id,event_id,name,belt,min_weight_grams,max_weight_grams,min_birth_year,max_birth_year,sex)
-                VALUES($1,$2,$3,$4,0,$5,$6,$7,$8)
+                (organizer_id,event_id,name,belt,min_weight_grams,max_weight_grams,min_birth_year,max_birth_year,sex,modality)
+                VALUES($1,$2,$3,$4,0,$5,$6,$7,$8,$9)
                 ON CONFLICT (event_id,sex,belt,name) DO NOTHING
-            """,p.organizer_id,p.event_id,name,belt,upper,born_min,born_max,p.sex)
+            """,p.organizer_id,p.event_id,name,belt,upper,born_min,born_max,p.sex,p.modality)
             if result=="INSERT 0 1":created+=1
-    return {"created":created,"requested":len(dict.fromkeys(p.belts))*len(GI_WEIGHTS[p.sex]),"rules":"gi_weight_with_uniform","event_year":year}
+    return {"created":created,"requested":len(dict.fromkeys(p.belts))*len((NO_GI_WEIGHTS if p.modality=="nogi" else GI_WEIGHTS)[p.sex]),"rules":p.modality+"_weight_with_uniform","event_year":year}
