@@ -199,6 +199,40 @@ NO_GI_WEIGHTS = {
  "male":[("Galo",55500),("Pluma",61500),("Pena",67500),("Leve",73500),("Médio",79500),("Meio-pesado",85500),("Pesado",91500),("Superpesado",97500),("Pesadíssimo",300000)],
  "female":[("Galo",46500),("Pluma",51500),("Pena",56500),("Leve",61500),("Médio",66500),("Meio-pesado",71500),("Pesado",76500),("Superpesado",300000)]
 }
+# Central catalog: year-of-birth age groups and eligible belts (IBJJF-inspired).
+AGE_BELTS = {
+ "mighty1":(4,4,["Branca","Cinza"]),
+ "mighty2":(5,5,["Branca","Cinza"]),
+ "mighty3":(6,6,["Branca","Cinza"]),
+ "peewee1":(7,7,["Branca","Cinza","Amarela"]),
+ "peewee2":(8,8,["Branca","Cinza","Amarela"]),
+ "peewee3":(9,9,["Branca","Cinza","Amarela"]),
+ "junior1":(10,10,["Branca","Cinza","Amarela","Laranja"]),
+ "junior2":(11,11,["Branca","Cinza","Amarela","Laranja"]),
+ "junior3":(12,12,["Branca","Cinza","Amarela","Laranja"]),
+ "teen1":(13,13,["Branca","Cinza","Amarela","Laranja","Verde"]),
+ "teen2":(14,14,["Branca","Cinza","Amarela","Laranja","Verde"]),
+ "teen3":(15,15,["Branca","Cinza","Amarela","Laranja","Verde"]),
+ "juvenile1":(16,16,["Branca","Azul","Roxa"]),
+ "juvenile2":(17,17,["Branca","Azul","Roxa"]),
+ "adult":(18,120,["Branca","Azul","Roxa","Marrom","Preta"]),
+ "master1":(30,120,["Branca","Azul","Roxa","Marrom","Preta"]),
+ "master2":(36,120,["Branca","Azul","Roxa","Marrom","Preta"]),
+ "master3":(41,120,["Branca","Azul","Roxa","Marrom","Preta"]),
+ "master4":(46,120,["Branca","Azul","Roxa","Marrom","Preta"]),
+ "master5":(51,120,["Branca","Azul","Roxa","Marrom","Preta"]),
+ "master6":(56,120,["Azul","Roxa","Marrom","Preta"]),
+ "master7":(61,120,["Azul","Roxa","Marrom","Preta"])
+}
+@router.get("/category-catalog")
+async def category_catalog(request:Request):
+    # Public static definitions, not organizer data.
+    return {"age_groups":[{"key":key,"min_age":age[0],"max_age":age[1],"belts":age[2],
+         "auto_weights_available":key in ("adult","master1","master2","master3","master4","master5","master6","master7")}
+         for key,age in AGE_BELTS.items()],
+        "modalities":["gi","nogi"],"sex_divisions":["male","female"],
+        "notice":"Infantil e juvenil: pesos dependem de tabela específica e do evento; não aplicar pesos adultos."}
+
 class TemplateBatch(BaseModel):
     organizer_id:uuid.UUID
     event_id:uuid.UUID
@@ -222,8 +256,8 @@ async def create_category_templates(p:TemplateBatch,request:Request):
         minage,maxage=ages[p.age_group]
         # Masters can register in younger age divisions; age cap is intentionally open.
         born_min=max(1900,year-maxage);born_max=min(2100,year-minage)
-        if p.age_group in ("master6","master7") and "Branca" in p.belts:
-            raise HTTPException(422,"Modelo IBJJF Master 6/7 não inclui faixa branca")
+        if any(b not in AGE_BELTS[p.age_group][2] for b in p.belts):
+            raise HTTPException(422,"Faixa não permitida para esta divisão etária no catálogo padrão")
         created=0
         for belt in dict.fromkeys(p.belts):
           for label,upper in (NO_GI_WEIGHTS if p.modality=="nogi" else GI_WEIGHTS)[p.sex]:
