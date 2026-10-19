@@ -141,3 +141,49 @@ async def confirm_external(entry_id:uuid.UUID,p:ExternalConfirmation,request:Req
         await conn.execute("""INSERT INTO public.finance_audit(organizer_id,actor_user_id,action,reference_id)
           VALUES($1,$2,'sport_entry_external_confirmed',$3)""",p.organizer_id,user.user_id,finance["id"])
     return {"ok":True,"commission_cents":cost,"debt_cents":max(0,debt)+cost}
+
+class AthleteEdit(BaseModel):
+    full_name:str=Field(min_length=3,max_length=160)
+    team:str=Field(default="",max_length=120)
+    birth_date:date
+    belt:str=Field(min_length=2,max_length=40)
+    weight_grams:int=Field(ge=10000,le=300000)
+
+@router.get("/athletes/{organizer_id}")
+async def list_athletes(organizer_id:uuid.UUID,request:Request):
+    await authorized(request,organizer_id,"organizer.events.read")
+    rows=await request.app.state.pool.fetch("""SELECT id::text,full_name,birth_date,team,belt,weight_grams
+      FROM public.sport_athletes WHERE organizer_id=$1 ORDER BY created_at DESC LIMIT 500""",organizer_id)
+    return {"items":[dict(row) for row in rows]}
+
+@router.get("/categories/{organizer_id}/{event_id}")
+async def list_categories(organizer_id:uuid.UUID,event_id:uuid.UUID,request:Request):
+    await authorized(request,organizer_id,"organizer.events.read")
+    rows=await request.app.state.pool.fetch("""SELECT id::text,name,belt,min_weight_grams,max_weight_grams,min_birth_year,max_birth_year
+      FROM public.sport_categories WHERE organizer_id=$1 AND event_id=$2 ORDER BY name LIMIT 300""",organizer_id,event_id)
+    return {"items":[dict(row) for row in rows]}
+
+@router.patch("/athletes/{organizer_id}/{athlete_id}")
+async def edit_athlete(organizer_id:uuid.UUID,athlete_id:uuid.UUID,p:AthleteEdit,request:Request):
+    require_origin(request)
+    await authorized(request,organizer_id,"organizer.registrations.manage")
+    if p.birth_date>date.today():raise HTTPException(422,"Nascimento inválido")
+    pool=request.app.state.pool
+    async with pool.acquire() as conn:
+      async with conn.transaction():
+        current=await conn.fetchrow("SELECT id FROM public.sport_athletes WHERE id=$1 AND organizer_id=$2 FOR UPDATE",athlete_id,organizer_id)
+        if not current:raise HTTPException(404,"Atleta não encontrado")
+        entries=await conn.fetch("""SELECT e.payment_status,c.belt,c.min_weight_grams,c.max_weight_grams,c.min_birth_year,c.max_birth_year
+          FROM public.sport_entries e JOIN public.sport_categories c ON c.id=e.category_id
+          WHERE e.athlete_id=$1 AND e.organizer_id=$2""",athlete_id,organizer_id)
+        for e in entries:
+            if e["payment_status"] not in ("pending","cancelled"):
+                raise HTTPException(409,"Dados esportivos de atleta confirmado exigem revisão administrativa")
+            if e["payment_status"]=="pending" and not(e["belt"].casefold()==p.belt.casefold()
+                and e["min_weight_grams"]<=p.weight_grams<=e["max_weight_grams"]
+                and e["min_birth_year"]<=p.birth_date.year<=e["max_birth_year"]):
+                raise HTTPException(409,"A edição deixaria uma inscrição pendente fora da categoria")
+        await conn.execute("""UPDATE public.sport_athletes
+          SET full_name=$1,team=$2,birth_date=$3,belt=$4,weight_grams=$5
+          WHERE id=$6 AND organizer_id=$7""",p.full_name.strip(),p.team.strip(),p.birth_date,p.belt.strip(),p.weight_grams,athlete_id,organizer_id)
+    return {"ok":True}
