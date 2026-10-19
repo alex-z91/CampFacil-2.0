@@ -468,11 +468,14 @@ async def accept_organizer_invite(payload: dict, request: Request,
                 raise HTTPException(403, "Entre com a conta do e-mail destinatário do convite")
             if invite["role"] != "admin" or invite["organizer_id"] is None:
                 raise HTTPException(409, "Convite inconsistente")
-            await conn.execute("""
+            added = await conn.fetchval("""
                 INSERT INTO public.organizer_members(organizer_id,user_id,role,status)
                 VALUES($1,$2,'admin','active')
                 ON CONFLICT(organizer_id,user_id) DO NOTHING
+                RETURNING user_id
             """, invite["organizer_id"], user.user_id)
+            if not added:
+                raise HTTPException(409, "Já existe vínculo para esta conta. Consulte o suporte.")
             await conn.execute("""
                 UPDATE public.organizers SET status='active'
                 WHERE id=$1 AND status='draft'
