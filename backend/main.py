@@ -174,6 +174,21 @@ async def login(payload: LoginInput, request: Request, response: Response):
                 break
     if not session_token:
         raise HTTPException(502, "O provedor não retornou um cookie de sessão")
+    # Exigir que o próprio provedor confirme a sessão antes de declarar login concluído.
+    try:
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=False) as client:
+            check = await client.get(
+                f"{NEON_AUTH_URL}/get-session",
+                headers={"cookie": f"{session_cookie_name}={session_token}"},
+            )
+        data = check.json() if check.status_code == 200 else {}
+        identity = data.get("user") if isinstance(data, dict) else None
+        if not isinstance(identity, dict) or not identity.get("id"):
+            raise HTTPException(502, "O provedor aceitou o login, mas não confirmou a sessão")
+    except httpx.RequestError:
+        raise HTTPException(503, "Não foi possível verificar a sessão no Neon")
+    except ValueError:
+        raise HTTPException(502, "Resposta inválida na verificação da sessão")
     response.set_cookie(
         "meucamp_session", session_token, httponly=True, secure=True,
         samesite="lax", path="/", max_age=60 * 60 * 24 * (30 if payload.remember else 1),
