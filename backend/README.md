@@ -1,4 +1,4 @@
-# API autenticada — Camp Fácil
+# API autenticada — MEUCAMP
 
 Esta API é um **esqueleto de desenvolvimento**, não um serviço publicado. Implementa consultas protegidas que falham com 401/403 por padrão.
 
