@@ -40,6 +40,7 @@ def valid_neon_cookie_name(name: str) -> bool:
 class Identity(BaseModel):
     user_id: str
     email: str
+    email_verified: bool = False
 
 
 async def authenticated(request: Request) -> Identity:
@@ -64,7 +65,7 @@ async def authenticated(request: Request) -> Identity:
         raise HTTPException(401, "Sessão inválida")
     if not uid or not email:
         raise HTTPException(401, "Neon não retornou uma identidade ativa")
-    return Identity(user_id=str(uid), email=str(email))
+    return Identity(user_id=str(uid), email=str(email), email_verified=user.get('emailVerified') is True)
 
 
 async def has_platform_role(pool, user_id: str, permission: str) -> bool:
@@ -91,9 +92,57 @@ async def health():
     return {"status": "ok"}
 
 
+async def provision_verified_organizer(pool, user: Identity) -> int:
+    """Provision approved organizers only for authenticated, email-verified owners."""
+    if not user.email_verified:
+        return 0
+    count = 0
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            apps = await conn.fetch("""
+                SELECT * FROM public.organizer_applications
+                WHERE status='approved' AND lower(email)=lower($1)
+                ORDER BY created_at FOR UPDATE
+            """, user.email.strip())
+            for app in apps:
+                oid = app["organizer_id"]
+                if oid is None:
+                    oid = await conn.fetchval(
+                        "INSERT INTO public.organizers(name,status) VALUES($1,'draft') RETURNING id",
+                        app["organization_name"])
+                    await conn.execute(
+                        "UPDATE public.organizer_applications SET organizer_id=$1 WHERE id=$2",
+                        oid, app["id"])
+                await conn.execute("""
+                    INSERT INTO public.organizer_members(organizer_id,user_id,role,status)
+                    VALUES($1,$2,'admin','active')
+                    ON CONFLICT(organizer_id,user_id) DO NOTHING
+                """, oid, user.user_id)
+                member = await conn.fetchrow("""
+                    SELECT role,status FROM public.organizer_members
+                    WHERE organizer_id=$1 AND user_id=$2
+                """, oid, user.user_id)
+                if member["role"] != "admin" or member["status"] != "active":
+                    continue
+                await conn.execute(
+                    "UPDATE public.organizers SET status='active' WHERE id=$1 AND status='draft'", oid)
+                if not await conn.fetchval("""
+                    SELECT 1 FROM public.organizer_onboarding_audit
+                    WHERE application_id=$1 AND event='verified_owner_activated' LIMIT 1
+                """, app["id"]):
+                    await conn.execute("""
+                        INSERT INTO public.organizer_onboarding_audit
+                        (application_id,organizer_id,actor_user_id,event)
+                        VALUES($1,$2,$3,'verified_owner_activated')
+                    """, app["id"], oid, user.user_id)
+                count += 1
+    return count
+
+
 @app.get("/api/me")
 async def me(user: Annotated[Identity, Depends(authenticated)], request: Request):
     pool = request.app.state.pool
+    await provision_verified_organizer(pool, user)
     master = await has_platform_role(pool, user.user_id, "platform.organizers.read")
     rows = await pool.fetch("""
         SELECT m.organizer_id::text AS id, o.name, m.role
@@ -368,15 +417,31 @@ async def master_review_application(application_id: str, payload: ApplicationRev
         parsed_id = uuid.UUID(application_id)
     except ValueError:
         raise HTTPException(404, "Solicitação não encontrada")
-    result = await request.app.state.pool.fetchrow("""
-        UPDATE public.organizer_applications
-        SET status=$1, reviewed_by=$2, reviewed_at=now()
-        WHERE id=$3 AND status IN ('requested','reviewing')
-        RETURNING id::text,status
-    """, payload.status, user.user_id, parsed_id)
-    if not result:
-        raise HTTPException(409, "Solicitação não encontrada ou já encerrada")
-    return dict(result)
+    async with request.app.state.pool.acquire() as conn:
+        async with conn.transaction():
+            app_row = await conn.fetchrow(
+                "SELECT * FROM public.organizer_applications WHERE id=$1 FOR UPDATE", parsed_id)
+            if not app_row:
+                raise HTTPException(404, "Solicitação não encontrada")
+            if app_row["status"] not in ("requested", "reviewing"):
+                raise HTTPException(409, "Solicitação já encerrada")
+            oid = app_row["organizer_id"]
+            if payload.status == "approved" and oid is None:
+                oid = await conn.fetchval(
+                    "INSERT INTO public.organizers(name,status) VALUES($1,'draft') RETURNING id",
+                    app_row["organization_name"])
+            result = await conn.fetchrow("""
+                UPDATE public.organizer_applications
+                SET status=$1, reviewed_by=$2, reviewed_at=now(), organizer_id=COALESCE($4,organizer_id)
+                WHERE id=$3 RETURNING id::text,status,organizer_id::text
+            """, payload.status, user.user_id, parsed_id, oid)
+            if payload.status == "approved":
+                await conn.execute("""
+                    INSERT INTO public.organizer_onboarding_audit
+                    (application_id,organizer_id,actor_user_id,event)
+                    VALUES($1,$2,$3,'organization_prepared')
+                """, parsed_id, oid, user.user_id)
+    return {**dict(result), "access": "awaiting_verified_owner" if payload.status=="approved" else "unchanged"}
 
 # Convites de uso único: nunca armazenar o token em texto puro no banco.
 import hashlib
