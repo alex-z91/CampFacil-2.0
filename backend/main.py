@@ -549,3 +549,6 @@ async def organizer_invite_signup(payload: InviteSignup, request: Request, respo
 # Finance endpoints are isolated; no Mercado Pago live charge is enabled.
 from finance import router as finance_router
 app.include_router(finance_router)
+
+from sports import router as sports_router
+app.include_router(sports_router)
