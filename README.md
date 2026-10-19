@@ -1,27 +1,22 @@
 # Camp Fácil 2.0
 
-Protótipo público e demonstrativo da nova plataforma Camp Fácil. **Não usar para inscrições ou pagamentos reais.**
+Protótipo de plataforma de eventos e inscrições de jiu-jítsu.
 
-## Como executar
+## Rotas
 
-Abra `index.html` no navegador ou acesse a URL do GitHub Pages depois de habilitá-lo.
+- `/` ou `index.html`: portal público com lista de eventos.
+- `/#/evento/copa-kings`: detalhes demonstrativos da Copa Kings.
+- `/#/inscricao/copa-kings`: simulação de inscrição, sem envio ou armazenamento de dados.
+- `/admin.html`: painel administrativo demonstrativo; **não possui autenticação**.
 
-## Recursos demonstrativos
+## Segurança e limites
 
-- Dashboard responsivo
-- Cadastro de atletas fictícios, busca e CSV
-- Confirmação manual fictícia de pagamentos e checagem
-- Chaveamento demonstrativo para quatro atletas
-- Lançamentos financeiros fictícios
-
-Os dados são salvos apenas no `localStorage` do dispositivo e não são sincronizados. Não há autenticação, backend conectado, integração com Neon, pagamentos reais ou regras oficiais completas.
+Projeto estático demonstrativo hospedável no GitHub Pages. Não coletar dados pessoais reais nem utilizar para pagamentos. O formulário público não persiste inscrições, enquanto os exemplos do painel administrativo usam `localStorage` do navegador. O banco Neon foi criado separadamente e ainda não está integrado.
 
 ## Publicação
 
-GitHub → Settings → Pages → Build and deployment → Deploy from a branch → `main` / `(root)` → Save.
+GitHub → Settings → Pages → Deploy from a branch → `main` / `/(root)`. O arquivo `CNAME` contém `meucamp.alexcoder.space`, que precisa ter um registro DNS CNAME apontando para `alex-z91.github.io` na GoDaddy e ser confirmado no Pages.
 
-Para um subdomínio, configure o campo **Custom domain** no Pages e crie um CNAME na GoDaddy para `alex-z91.github.io` (sem `https://`). Só criar um arquivo `CNAME` depois que o subdomínio escolhido estiver definido.
+## Próximas etapas
 
-## Desenvolvimento
-
-Backend, controle de acesso, regras de categorias e pagamentos serão implementados em ambiente seguro posteriormente.
+API autenticada, isolamento organizador/evento, cadastro seguro de atletas e responsáveis, tabela de categorias baseada em regulamento versionado, lotes e pagamento, checagem, chaves, resultados e publicação.
