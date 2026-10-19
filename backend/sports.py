@@ -120,7 +120,7 @@ async def create_entry(p:EntryIn,request:Request):
 @router.get("/entries/{organizer_id}/{event_id}")
 async def list_entries(organizer_id:uuid.UUID,event_id:uuid.UUID,request:Request):
     await authorized(request,organizer_id,"organizer.events.read")
-    rows=await request.app.state.pool.fetch("""SELECT e.id::text,a.full_name,c.name AS category,e.base_cents,e.payment_status,e.eligible
+    rows=await request.app.state.pool.fetch("""SELECT e.id::text,e.athlete_id::text,e.category_id::text,a.full_name,c.name AS category,e.base_cents,e.payment_status,e.eligible
         FROM public.sport_entries e JOIN public.sport_athletes a ON a.id=e.athlete_id
         JOIN public.sport_categories c ON c.id=e.category_id
         WHERE e.organizer_id=$1 AND e.event_id=$2 ORDER BY e.created_at DESC LIMIT 200""",organizer_id,event_id)
