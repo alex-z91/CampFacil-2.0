@@ -1,4 +1,4 @@
-# Camp Fácil 2.0
+# MEUCAMP 2.0
 
 Protótipo de plataforma de eventos e inscrições de jiu-jítsu.
 
