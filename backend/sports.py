@@ -12,6 +12,9 @@ class EventIn(BaseModel):
     name:str=Field(min_length=3,max_length=180)
     event_date:date
     city:str=Field(min_length=2,max_length=120)
+    has_gi:bool=True
+    has_nogi:bool=False
+    has_absolute:bool=False
 class AthleteIn(BaseModel):
     organizer_id:uuid.UUID
     full_name:str=Field(min_length=3,max_length=160)
@@ -47,14 +50,23 @@ def require_origin(request):
 async def create_event(p:EventIn,request:Request):
     require_origin(request)
     user=await authorized(request,p.organizer_id,"organizer.events.manage")
-    row=await request.app.state.pool.fetchrow("""INSERT INTO public.sport_events(organizer_id,name,event_date,city,created_by)
-        VALUES($1,$2,$3,$4,$5) RETURNING id::text,status""",p.organizer_id,p.name.strip(),p.event_date,p.city.strip(),user.user_id)
-    return dict(row)
+    if not p.has_gi and not p.has_nogi:
+        raise HTTPException(422,"Selecione Gi, No-Gi ou ambos")
+    async with request.app.state.pool.acquire() as conn:
+      async with conn.transaction():
+        row=await conn.fetchrow("""INSERT INTO public.sport_events
+            (organizer_id,name,event_date,city,created_by,has_gi,has_nogi,has_absolute)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id::text,status""",
+            p.organizer_id,p.name.strip(),p.event_date,p.city.strip(),user.user_id,
+            p.has_gi,p.has_nogi,p.has_absolute)
+        created=await build_default_categories(conn,p.organizer_id,uuid.UUID(row["id"]),p.event_date.year,
+            [m for m,enabled in (("gi",p.has_gi),("nogi",p.has_nogi)) if enabled],p.has_absolute)
+    return {**dict(row),"categories_created":created}
 
 @router.get("/events/{organizer_id}")
 async def list_events(organizer_id:uuid.UUID,request:Request):
     await authorized(request,organizer_id,"organizer.events.read")
-    rows=await request.app.state.pool.fetch("""SELECT id::text,name,event_date,city,status FROM public.sport_events
+    rows=await request.app.state.pool.fetch("""SELECT id::text,name,event_date,city,status,has_gi,has_nogi,has_absolute FROM public.sport_events
         WHERE organizer_id=$1 ORDER BY event_date DESC LIMIT 100""",organizer_id)
     return {"items":[dict(row) for row in rows]}
 
@@ -270,3 +282,31 @@ async def create_category_templates(p:TemplateBatch,request:Request):
             """,p.organizer_id,p.event_id,name,belt,upper,born_min,born_max,p.sex,p.modality)
             if result=="INSERT 0 1":created+=1
     return {"created":created,"requested":len(dict.fromkeys(p.belts))*len((NO_GI_WEIGHTS if p.modality=="nogi" else GI_WEIGHTS)[p.sex]),"rules":p.modality+"_weight_with_uniform","event_year":year}
+
+async def build_default_categories(conn,oid,eid,year,modalities,absolute):
+    """Adult/master preset; do not apply adult weight limits to children."""
+    created=0
+    for modality in modalities:
+      weights=GI_WEIGHTS if modality=="gi" else NO_GI_WEIGHTS
+      for group in ("adult","master1","master2","master3","master4","master5","master6","master7"):
+        low,high,belts=AGE_BELTS[group]
+        first=max(1900,year-high); last=min(2100,year-low)
+        for sex in ("male","female"):
+          for belt in belts:
+            for label,maxweight in weights[sex]:
+              name=f"{modality.upper()} · {group.upper()} · {'Masculino' if sex=='male' else 'Feminino'} · {label}"
+              result=await conn.execute("""INSERT INTO public.sport_categories
+                  (organizer_id,event_id,name,belt,min_weight_grams,max_weight_grams,min_birth_year,max_birth_year,sex,modality,is_absolute)
+                  VALUES($1,$2,$3,$4,0,$5,$6,$7,$8,$9,false)
+                  ON CONFLICT (event_id,sex,belt,name) DO NOTHING""",
+                  oid,eid,name,belt,maxweight,first,last,sex,modality)
+              created+=result=="INSERT 0 1"
+            if absolute:
+              name=f"{modality.upper()} · {group.upper()} · {'Masculino' if sex=='male' else 'Feminino'} · Absoluto"
+              result=await conn.execute("""INSERT INTO public.sport_categories
+                  (organizer_id,event_id,name,belt,min_weight_grams,max_weight_grams,min_birth_year,max_birth_year,sex,modality,is_absolute)
+                  VALUES($1,$2,$3,$4,0,300000,$5,$6,$7,$8,true)
+                  ON CONFLICT (event_id,sex,belt,name) DO NOTHING""",
+                  oid,eid,name,belt,first,last,sex,modality)
+              created+=result=="INSERT 0 1"
+    return created
