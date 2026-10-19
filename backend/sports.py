@@ -156,6 +156,39 @@ async def confirm_external(entry_id:uuid.UUID,p:ExternalConfirmation,request:Req
           VALUES($1,$2,'sport_entry_external_confirmed',$3)""",p.organizer_id,user.user_id,finance["id"])
     return {"ok":True,"commission_cents":cost,"debt_cents":max(0,debt)+cost}
 
+class UndoExternalConfirmation(BaseModel):
+    organizer_id:uuid.UUID
+    reason:str=Field(min_length=10,max_length=500)
+
+@router.post("/entries/{entry_id}/reverse-external")
+async def reverse_external(entry_id:uuid.UUID,p:UndoExternalConfirmation,request:Request):
+    require_origin(request)
+    user=await authorized(request,p.organizer_id,"organizer.registrations.manage")
+    reason=p.reason.strip()
+    if len(reason)<10:raise HTTPException(422,"Informe um motivo com pelo menos 10 caracteres")
+    async with request.app.state.pool.acquire() as conn:
+      async with conn.transaction():
+        entry=await conn.fetchrow("SELECT * FROM public.sport_entries WHERE id=$1 AND organizer_id=$2 FOR UPDATE",entry_id,p.organizer_id)
+        if not entry:raise HTTPException(404,"Inscrição não encontrada")
+        if entry["payment_status"]!="external_confirmed":raise HTTPException(409,"Somente pagamentos presenciais confirmados podem ser revertidos aqui")
+        registration=await conn.fetchrow("""SELECT id,commission_cents FROM public.finance_registrations
+            WHERE organizer_id=$1 AND reference=$2 AND payment_channel='external'
+            AND payment_status='confirmed' FOR UPDATE""",p.organizer_id,str(entry_id))
+        if not registration:raise HTTPException(409,"Registro financeiro não encontrado; solicite revisão administrativa")
+        original=await conn.fetchval("""SELECT COALESCE(SUM(amount_cents),0) FROM public.finance_ledger
+            WHERE organizer_id=$1 AND registration_id=$2""",p.organizer_id,registration["id"])
+        if original<0:raise HTTPException(409,"Saldo financeiro inconsistente; solicite revisão")
+        if original>0:
+            await conn.execute("""INSERT INTO public.finance_ledger
+              (organizer_id,registration_id,entry_type,amount_cents,created_by)
+              VALUES($1,$2,'reversal',$3,$4)""",p.organizer_id,registration["id"],-original,user.user_id)
+        await conn.execute("UPDATE public.finance_registrations SET payment_status='cancelled' WHERE id=$1",registration["id"])
+        await conn.execute("""UPDATE public.sport_entries SET payment_status='pending',eligible=false
+              WHERE id=$1 AND organizer_id=$2""",entry_id,p.organizer_id)
+        await conn.execute("""INSERT INTO public.finance_audit(organizer_id,actor_user_id,action,reference_id,details)
+             VALUES($1,$2,'sport_entry_external_reversed',$3,$4)""",p.organizer_id,user.user_id,registration["id"],reason)
+    return {"ok":True,"reversed_commission_cents":original,"status":"pending"}
+
 class AthleteEdit(BaseModel):
     full_name:str=Field(min_length=3,max_length=160)
     team:str=Field(default="",max_length=120)
