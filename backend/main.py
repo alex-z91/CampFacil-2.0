@@ -41,14 +41,14 @@ async def authenticated(request: Request) -> Identity:
     token = request.cookies.get("meucamp_session")
     cookie_name = request.cookies.get("meucamp_session_name", "better-auth.session_token")
     if cookie_name not in ("better-auth.session_token", "__Secure-better-auth.session_token"):
-        raise HTTPException(401, "Sessão inválida")
+        raise HTTPException(401, "Cookie de sessão não reconhecido")
     cookie = f"{cookie_name}={token}" if token else ""
     if not cookie:
         raise HTTPException(401, "Autenticação necessária")
     async with httpx.AsyncClient(timeout=8.0, follow_redirects=False) as client:
         response = await client.get(f"{NEON_AUTH_URL}/get-session", headers={"cookie": cookie})
     if response.status_code != 200:
-        raise HTTPException(401, "Sessão inválida")
+        raise HTTPException(401, "Neon recusou a verificação de sessão")
     try:
         data = response.json()
         user = data.get("user") if isinstance(data, dict) else None
@@ -57,7 +57,7 @@ async def authenticated(request: Request) -> Identity:
     except (ValueError, AttributeError):
         raise HTTPException(401, "Sessão inválida")
     if not uid or not email:
-        raise HTTPException(401, "Sessão inválida")
+        raise HTTPException(401, "Neon não retornou uma identidade ativa")
     return Identity(user_id=str(uid), email=str(email))
 
 
@@ -266,3 +266,10 @@ async def reset_password(payload: ResetFinish, request: Request):
     if result.status_code != 200:
         raise HTTPException(400, "Link expirado ou inválido. Solicite outro.")
     return {"ok": True}
+
+@app.get("/api/auth/session-check")
+async def session_check(request: Request):
+    # Diagnóstico sem revelar cookies, tokens nem contas.
+    session_present = bool(request.cookies.get("meucamp_session"))
+    name_present = bool(request.cookies.get("meucamp_session_name"))
+    return {"cookie_present": session_present, "cookie_name_present": name_present}
