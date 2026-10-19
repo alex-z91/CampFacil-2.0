@@ -544,3 +544,8 @@ async def organizer_invite_signup(payload: InviteSignup, request: Request, respo
     response.set_cookie("meucamp_session", session_token, httponly=True, secure=True, samesite="lax", path="/", max_age=86400)
     response.set_cookie("meucamp_session_name", session_name, httponly=True, secure=True, samesite="lax", path="/", max_age=86400)
     return {"ok": True, "login_required": False}
+
+
+# Finance endpoints are isolated; no Mercado Pago live charge is enabled.
+from finance import router as finance_router
+app.include_router(finance_router)
