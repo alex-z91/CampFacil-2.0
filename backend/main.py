@@ -377,3 +377,112 @@ async def master_review_application(application_id: str, payload: ApplicationRev
     if not result:
         raise HTTPException(409, "Solicitação não encontrada ou já encerrada")
     return dict(result)
+
+# Convites de uso único: nunca armazenar o token em texto puro no banco.
+import hashlib
+import secrets
+import uuid
+
+
+def invitation_digest(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+@app.post("/api/platform/organizer-applications/{application_id}/invite")
+async def create_organizer_invite(application_id: str, request: Request,
+                                  user: Annotated[Identity, Depends(authenticated)]):
+    trusted_request(request)
+    pool = request.app.state.pool
+    if not await has_platform_role(pool, user.user_id, "platform.organizers.manage"):
+        raise HTTPException(403, "Acesso não autorizado")
+    try:
+        aid = uuid.UUID(application_id)
+    except ValueError:
+        raise HTTPException(404, "Solicitação não encontrada")
+    token = secrets.token_urlsafe(40)
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            a = await conn.fetchrow(
+                "SELECT * FROM public.organizer_applications WHERE id=$1 FOR UPDATE", aid)
+            if not a:
+                raise HTTPException(404, "Solicitação não encontrada")
+            if a["status"] != "approved":
+                raise HTTPException(409, "A solicitação precisa estar aprovada")
+            existing = await conn.fetchval(
+                "SELECT id FROM public.access_invites WHERE application_id=$1", aid)
+            if existing:
+                raise HTTPException(409, "Esta solicitação já teve convite emitido")
+            oid = a["organizer_id"]
+            if oid is None:
+                oid = await conn.fetchval(
+                    "INSERT INTO public.organizers(name,status) VALUES($1,'draft') RETURNING id",
+                    a["organization_name"])
+                await conn.execute(
+                    "UPDATE public.organizer_applications SET organizer_id=$1 WHERE id=$2",
+                    oid, aid)
+            await conn.execute("""
+                INSERT INTO public.access_invites
+                (email,scope,organizer_id,role,expires_at,token_hash,application_id)
+                VALUES($1,'organizer',$2,'admin',now()+interval '7 days',$3,$4)
+            """, a["email"].lower(), oid, invitation_digest(token), aid)
+            await conn.execute("""
+                INSERT INTO public.organizer_onboarding_audit
+                (application_id,organizer_id,actor_user_id,event)
+                VALUES($1,$2,$3,'invite_created')
+            """, aid, oid, user.user_id)
+    return {"ok": True, "invite_url": FRONTEND_ORIGIN + "/aceitar-convite.html?token=" + token,
+            "message": "Copie o convite agora. O link não poderá ser recuperado posteriormente."}
+
+
+@app.get("/api/public/organizer-invite")
+async def get_organizer_invite(token: str, request: Request):
+    if len(token) > 256 or len(token) < 30:
+        raise HTTPException(400, "Convite inválido")
+    a = await request.app.state.pool.fetchrow("""
+        SELECT i.email,o.name FROM public.access_invites i
+        JOIN public.organizers o ON o.id=i.organizer_id
+        WHERE i.token_hash=$1 AND i.scope='organizer' AND i.accepted_at IS NULL
+          AND i.expires_at>now()
+    """, invitation_digest(token))
+    if not a:
+        raise HTTPException(404, "Convite inválido ou expirado")
+    return {"email": a["email"], "organization": a["name"]}
+
+
+@app.post("/api/organizer-invite/accept")
+async def accept_organizer_invite(payload: dict, request: Request,
+                                  user: Annotated[Identity, Depends(authenticated)]):
+    trusted_request(request)
+    token = payload.get("token")
+    if not isinstance(token, str) or not 30 <= len(token) <= 256:
+        raise HTTPException(422, "Convite inválido")
+    pool = request.app.state.pool
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            invite = await conn.fetchrow("""
+                SELECT * FROM public.access_invites WHERE token_hash=$1 FOR UPDATE
+            """, invitation_digest(token))
+            if not invite or invite["scope"] != "organizer" or invite["accepted_at"] or invite["expires_at"].timestamp() <= __import__("datetime").datetime.now(__import__("datetime").timezone.utc).timestamp():
+                raise HTTPException(410, "Convite expirado ou utilizado")
+            if invite["email"].strip().lower() != user.email.strip().lower():
+                raise HTTPException(403, "Entre com a conta do e-mail destinatário do convite")
+            if invite["role"] != "admin" or invite["organizer_id"] is None:
+                raise HTTPException(409, "Convite inconsistente")
+            await conn.execute("""
+                INSERT INTO public.organizer_members(organizer_id,user_id,role,status)
+                VALUES($1,$2,'admin','active')
+                ON CONFLICT(organizer_id,user_id) DO NOTHING
+            """, invite["organizer_id"], user.user_id)
+            await conn.execute("""
+                UPDATE public.organizers SET status='active'
+                WHERE id=$1 AND status='draft'
+            """, invite["organizer_id"])
+            await conn.execute("""
+                UPDATE public.access_invites SET accepted_at=now() WHERE id=$1
+            """, invite["id"])
+            await conn.execute("""
+                INSERT INTO public.organizer_onboarding_audit
+                (application_id,organizer_id,actor_user_id,event)
+                VALUES($1,$2,$3,'invite_accepted')
+            """, invite["application_id"], invite["organizer_id"], user.user_id)
+    return {"ok": True}
