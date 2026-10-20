@@ -605,7 +605,7 @@ async def publish_brackets(event_id:uuid.UUID,p:BracketAction,request:Request):
       async with conn.transaction():
         event=await conn.fetchrow("SELECT registration_closed_at,registration_deadline FROM public.sport_events WHERE id=$1 AND organizer_id=$2 FOR UPDATE",event_id,p.organizer_id)
         if not event:raise HTTPException(404,"Evento não encontrado")
-        if not (event["registration_closed_at"] or (event["registration_deadline"] and event["registration_deadline"]<date.today())):raise HTTPException(409,"Inscrições não encerradas")
+        if not (event["registration_closed_at"] or (event["registration_deadline"] and event["registration_deadline"]<=datetime.now(event["registration_deadline"].tzinfo))):raise HTTPException(409,"Inscrições não encerradas")
         n=await conn.fetchval("SELECT count(*) FROM public.sport_brackets WHERE event_id=$1 AND organizer_id=$2",event_id,p.organizer_id)
         if not n:raise HTTPException(409,"Gere e confira as chaves primeiro")
         await conn.execute("UPDATE public.sport_brackets SET status='published',published_at=COALESCE(published_at,now()) WHERE event_id=$1 AND organizer_id=$2 AND status='draft'",event_id,p.organizer_id)
@@ -617,7 +617,7 @@ async def view_brackets(event_id:uuid.UUID,organizer_id:uuid.UUID,request:Reques
     await authorized(request,organizer_id,"organizer.events.read")
     rows=await request.app.state.pool.fetch("""SELECT b.id::text bracket_id,b.status bracket_status,
        c.name category,c.belt,c.modality,m.round_number,m.position,m.status match_status,
-       m.id::text match_id,m.red_entry_id::text red_entry_id,m.blue_entry_id::text blue_entry_id,m.winner_entry_id::text winner_entry_id,ra.team red_team,ba.team blue_team,
+       m.id::text match_id,m.red_entry_id::text red_entry_id,m.blue_entry_id::text blue_entry_id,m.winner_entry_id::text winner_entry_id,m.result_method,m.result_notes,m.completed_at,ra.team red_team,ba.team blue_team,
        ra.full_name red_name,ba.full_name blue_name
        FROM public.sport_brackets b JOIN public.sport_categories c ON c.id=b.category_id
        JOIN public.sport_bracket_matches m ON m.bracket_id=b.id
@@ -715,3 +715,45 @@ async def swap_bracket_slots(bracket_id:uuid.UUID,p:BracketSwap,request:Request)
             VALUES($1,$2,'sport_bracket_slots_swapped',$3,$4)""",
             p.organizer_id,user.user_id,bracket_id,str(p.first_match_id)+":"+p.first_side+" <> "+str(p.second_match_id)+":"+p.second_side)
     return {"ok":True}
+
+class MatchResult(BaseModel):
+    organizer_id:uuid.UUID
+    winner_entry_id:uuid.UUID
+    method:Literal["points","submission","decision","disqualification","wo"]
+    notes:str=Field(default="",max_length=500)
+
+@router.post("/brackets/matches/{match_id}/result")
+async def register_match_result(match_id:uuid.UUID,p:MatchResult,request:Request):
+    require_origin(request)
+    user=await authorized(request,p.organizer_id,"organizer.events.manage")
+    async with request.app.state.pool.acquire() as conn:
+      async with conn.transaction():
+        match=await conn.fetchrow("""SELECT m.*,b.event_id,b.category_id,b.status bracket_status
+            FROM public.sport_bracket_matches m JOIN public.sport_brackets b ON b.id=m.bracket_id
+            WHERE m.id=$1 AND b.organizer_id=$2 FOR UPDATE OF m,b""",match_id,p.organizer_id)
+        if not match:raise HTTPException(404,"Luta não encontrada")
+        if match["bracket_status"]!="published":raise HTTPException(409,"Publique a chave antes de registrar resultados")
+        if match["status"]!="scheduled":raise HTTPException(409,"Luta já concluída ou resolvida por BYE")
+        if not match["red_entry_id"] or not match["blue_entry_id"]:
+            raise HTTPException(409,"Aguarde a definição dos dois atletas")
+        if p.winner_entry_id not in (match["red_entry_id"],match["blue_entry_id"]):
+            raise HTTPException(422,"Vencedor não pertence a este confronto")
+        # Never overwrite an advanced winner or a previously completed fight.
+        nxt=await conn.fetchrow("""SELECT id,red_entry_id,blue_entry_id,status
+            FROM public.sport_bracket_matches WHERE bracket_id=$1 AND round_number=$2 AND position=$3 FOR UPDATE""",
+            match["bracket_id"],match["round_number"]+1,(match["position"]+1)//2)
+        if nxt:
+            target="red_entry_id" if match["position"]%2 else "blue_entry_id"
+            if nxt[target] is not None:raise HTTPException(409,"Destino já ocupado; revisão administrativa necessária")
+            if nxt["status"]!="scheduled":raise HTTPException(409,"A próxima luta já foi concluída")
+        await conn.execute("""UPDATE public.sport_bracket_matches SET status=$1,winner_entry_id=$2,
+            result_method=$3,result_notes=$4,completed_at=now(),completed_by=$5 WHERE id=$6""",
+            "wo" if p.method=="wo" else "finished",p.winner_entry_id,p.method,p.notes.strip(),user.user_id,match_id)
+        if nxt:
+            await conn.execute("UPDATE public.sport_bracket_matches SET "+target+"=$1 WHERE id=$2",p.winner_entry_id,nxt["id"])
+        await conn.execute("""INSERT INTO public.finance_audit(organizer_id,actor_user_id,action,reference_id,details)
+            VALUES($1,$2,'sport_match_result_registered',$3,$4)""",
+            p.organizer_id,user.user_id,match_id,p.method+":"+str(p.winner_entry_id)+":"+p.notes.strip())
+    return {"ok":True,"winner_entry_id":str(p.winner_entry_id),"method":p.method,
+            "champion":nxt is None}
+
