@@ -1,0 +1,23 @@
+/* Arena Pro — shared mobile-first visual system */
+:root{--ap-orange:#ff9825;--ap-dark:#1d1d1d;--ap-paper:#faf9f7;--ap-border:#e8e4df;--ap-muted:#77716b}
+html{color-scheme:light}body{background:var(--ap-paper);color:var(--ap-dark)}
+button,input,select,textarea{font:inherit;max-width:100%}
+button,a,summary{touch-action:manipulation}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{outline:3px solid #ffb257;outline-offset:2px}
+button{min-height:44px}
+a{color:#ba640d}
+.brand{color:var(--ap-dark);text-decoration:none}
+.ap-wordmark{display:inline-flex;align-items:center;gap:10px;min-width:0}
+.ap-wordmark img{width:clamp(145px,40vw,202px);height:52px;object-fit:contain;object-position:left center}
+.panel,.card,.box,.action-card,.roster-group{border-color:var(--ap-border)!important}
+button:not(.secondary):not(.danger):not(.sidebar-toggle):not(.mobile-menu):not(.public-menu-toggle),.action,.submit,.navbtn{background:var(--ap-orange);color:#202020}
+button:disabled{opacity:.5}
+input,select,textarea{background:#fff;color:#272727;border-color:#d8d2cc}
+.notice,#message,#status{overflow-wrap:anywhere}
+.muted{color:var(--ap-muted)}
+.wrap,.container,.adminmain{max-width:100%}
+.grid,.fields,.action-grid,.stats,.layout{min-width:0}
+table{width:100%}
+@media(max-width:699px){.wrap,.adminmain{padding:16px!important;margin:10px auto!important}.panel{padding:17px!important}.grid,.fields,.action-grid,.layout{grid-template-columns:minmax(0,1fr)!important}.stats{grid-template-columns:repeat(2,minmax(0,1fr))!important}.actions{flex-wrap:wrap}.ap-wordmark img{height:46px}.table-wrap,.list{overflow-x:auto}input,select,textarea{font-size:16px!important}}
+@media(min-width:700px){.wrap,.adminmain{max-width:1200px;margin-inline:auto}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
