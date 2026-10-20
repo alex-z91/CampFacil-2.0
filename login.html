@@ -1,1 +1,32 @@
-<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>Entrar | Arena Pro</title><link rel="stylesheet" href="login.css"><style>:root{--brand:#ff9825;--brand-orange:#ff9825;--primary:#ff9825}button[type=submit],.submit,.action{background:#ff9825!important;color:#171717!important}a.brand,.brand{font-weight:700;color:#1c1c1c!important}.mark{background:#ff9825!important;color:#fff!important}.dot{color:#ff9825!important}</style><link rel="stylesheet" href="arena-theme.css?v=1"></head><body><main class="layout"><section class="side"><a class="brand" href="index.html"><span class="mark">a</span> arena pro</a><div class="side-content"><span class="eyebrow">Arena Pro 2.0</span><h1>Seu campeonato, sob controle.</h1><p>Organize inscrições, confira categorias, acompanhe resultados e gerencie seus campeonatos de um só lugar.</p><div class="illustration"><div class="ill-header"><span>Visão geral</span><small>● Demonstração</small></div><div class="ill-kpis"><div><small>Inscrições</small><strong>46</strong></div><div><small>Confirmados</small><strong>01</strong></div><div><small>Eventos</small><strong>01</strong></div></div><div class="ill-bar"><span></span></div></div></div><span class="foot">© Arena Pro · Plataforma de gestão esportiva</span></section><section class="main"><div class="formwrap"><span class="topcaption">ACESSO ADMINISTRATIVO</span><h2>Bem-vindo de volta</h2><p class="subtitle">Entre na sua conta para gerenciar os campeonatos.</p><div class="warning" id="status" role="status" aria-live="polite">Acesso restrito a usuários autorizados. O login está sendo integrado à API Arena Pro.</div><form id="login-form"><label for="email">E-mail de acesso</label><input id="email" type="email" autocomplete="email" required placeholder="seu@email.com"><label for="password">Senha</label><div class="password"><input id="password" type="password" autocomplete="current-password" required placeholder="••••••••"><button type="button" id="toggle" title="Mostrar ou ocultar senha">◉</button></div><div class="extras"><label class="remember"><input type="checkbox" id="remember" checked> Manter conectado</label><span><a href="recuperar-acesso.html">Esqueci minha senha</a></span></div><button type="submit" class="submit">Entrar na plataforma →</button></form><div class="demoarea"><p>O acesso aos dados administrativos exige uma sessão autorizada.</p></div><a href="index.html" class="back">← Voltar ao portal de eventos</a></div></section></main><script src="login.js?v=20261019-session2" defer></script></body></html>
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><meta name="theme-color" content="#1d1d1d">
+<title>Entrar | Arena Pro</title>
+<link rel="stylesheet" href="arena-login.css?v=1">
+</head>
+<body>
+<main class="auth-layout">
+  <section class="auth-main" aria-labelledby="login-heading">
+    <div class="auth-content">
+      <a class="brand-link" href="index.html" aria-label="Arena Pro — página inicial"><img src="arena-pro-logo.svg" alt="Arena Pro"></a>
+      <div class="auth-heading"><span class="eyebrow">ÁREA DO ORGANIZADOR</span><h1 id="login-heading">Bem-vindo de volta.</h1><p>Entre para acompanhar seus campeonatos, inscrições e resultados.</p></div>
+      <div id="status" class="auth-status" role="status" aria-live="polite" data-state="idle">Entre com as credenciais da sua conta Arena Pro.</div>
+      <form id="login-form">
+        <label for="email">E-mail</label>
+        <input id="email" name="email" type="email" autocomplete="username" inputmode="email" required placeholder="seu@email.com">
+        <div class="password-head"><label for="password">Senha</label><a href="recuperar-acesso.html">Esqueceu a senha?</a></div>
+        <div class="password-field"><input id="password" name="password" type="password" autocomplete="current-password" required placeholder="Digite sua senha"><button type="button" id="toggle" aria-label="Mostrar senha" aria-pressed="false" title="Mostrar ou ocultar senha"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.7-6 10-6 10 6 10 6-3.7 6-10 6-10-6-10-6Z"/><circle cx="12" cy="12" r="3"/></svg></button></div>
+        <label class="remember"><input type="checkbox" id="remember" checked><span>Manter conectado</span></label>
+        <button class="submit" type="submit">Entrar na plataforma <span aria-hidden="true">→</span></button>
+      </form>
+      <div class="auth-links"><p>Quer organizar um campeonato? <a href="seja-organizador.html">Solicitar acesso</a></p><a class="back" href="index.html">← Voltar ao portal de eventos</a></div>
+    </div>
+  </section>
+  <aside class="auth-aside" aria-label="Apresentação Arena Pro">
+    <div class="aside-inner"><div class="aside-top"><span class="symbol">a</span><span>arena<span class="word-accent">pro</span></span></div><div class="aside-copy"><span class="aside-kicker">UMA NOVA ARENA PARA GRANDES EVENTOS</span><h2>Seu campeonato.<br><em>Seu controle.</em></h2><p>Mais organização antes, durante e depois de cada combate.</p><div class="feature-list"><span>Inscrições organizadas</span><span>Gestão de atletas e categorias</span><span>Chaves e resultados em um só lugar</span></div></div><small>ARENA PRO · PLATAFORMA DE GESTÃO ESPORTIVA</small></div>
+  </aside>
+</main>
+<script src="login.js?v=20261020-arena-login" defer></script>
+</body></html>
