@@ -1,0 +1,47 @@
+/* Arena Pro organizer panel — mobile-first */
+:root{--arena:#ff9825;--arena-ink:#1d1d1d}
+body{background:#fafafa;color:var(--arena-ink)}
+.shell{min-width:0}
+.main{min-width:0;width:100%}
+.arena-admin-mark{display:block;width:45px;height:45px;object-fit:cover;object-position:left center;background:#fff;border-radius:11px}
+.sidebar{background:#1d1d1d;color:#fff}
+.sidebar .brand strong{font-weight:600;font-size:18px;letter-spacing:-.5px}
+.sidebar .brand small,.sidebar .group-label,.sidebar .eyebrow{color:#a6a6a6}
+.workspace{background:#2c2c2c}
+.workspace #workspace-controls label{color:#bbb}
+.sidebar nav button{color:#dedede;min-height:44px}
+.sidebar nav button:hover,.sidebar nav button.active{background:#50371c;color:#ffb55e}
+.sidebar .logo-area{flex-shrink:0}
+.sidebar-toggle{background:#ff9825;color:#202020}
+.topbar{min-width:0}
+.topbar .crumb{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.topbar .topright{display:flex;align-items:center;gap:8px;min-width:0}
+.topbar .topright .btn{min-height:40px}
+.btn.primary,.primary{background:#ff9825!important;color:#1f1f1f!important;border-color:#ff9825!important}
+#content{min-width:0;overflow-wrap:anywhere}
+#content .panel{max-width:100%}
+#content .table{width:100%}
+#content .bracket-board{overscroll-behavior-x:contain}
+#content input,#content select,.match-result-dialog select,.match-result-dialog textarea{font-size:16px}
+.real-form{grid-template-columns:minmax(0,1fr)}
+.bracket-actions{display:grid;grid-template-columns:1fr;gap:8px}
+.bracket-actions button,.bracket-actions a{min-height:44px}
+.match-result-dialog{max-height:90dvh;overflow-y:auto}
+.real-actions{flex-wrap:wrap}
+.real-actions .btn{min-height:44px}
+@media(max-width:700px){
+ .sidebar{max-width:min(88vw,310px)}
+ .topbar{gap:7px}
+ .topbar .topright .avatar{display:none}
+ .topbar .topright .btn{padding:8px 9px;font-size:12px}
+ .topbar .crumb{font-size:12px}
+ .sidebar .brand{padding-bottom:15px}
+ .sidebar .logo-area{pointer-events:auto}
+ #content{padding-left:12px;padding-right:12px}
+ .real-notice{margin:10px 12px}
+}
+@media(min-width:701px){
+ .real-form{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .bracket-actions{display:flex;flex-wrap:wrap}
+ .arena-admin-mark{width:45px}
+}
