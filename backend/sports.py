@@ -576,3 +576,19 @@ async def publish_brackets(event_id:uuid.UUID,p:BracketAction,request:Request):
         await conn.execute("UPDATE public.sport_brackets SET status='published',published_at=COALESCE(published_at,now()) WHERE event_id=$1 AND organizer_id=$2 AND status='draft'",event_id,p.organizer_id)
         await conn.execute("INSERT INTO public.finance_audit(organizer_id,actor_user_id,action,reference_id) VALUES($1,$2,'sport_brackets_published',$3)",p.organizer_id,user.user_id,event_id)
     return {"ok":True,"published_brackets":n}
+
+@router.get("/events/{event_id}/brackets/{organizer_id}")
+async def view_brackets(event_id:uuid.UUID,organizer_id:uuid.UUID,request:Request):
+    await authorized(request,organizer_id,"organizer.events.read")
+    rows=await request.app.state.pool.fetch("""SELECT b.id::text bracket_id,b.status bracket_status,
+       c.name category,c.belt,c.modality,m.round_number,m.position,m.status match_status,
+       ra.full_name red_name,ba.full_name blue_name
+       FROM public.sport_brackets b JOIN public.sport_categories c ON c.id=b.category_id
+       JOIN public.sport_bracket_matches m ON m.bracket_id=b.id
+       LEFT JOIN public.sport_entries re ON re.id=m.red_entry_id
+       LEFT JOIN public.sport_athletes ra ON ra.id=re.athlete_id
+       LEFT JOIN public.sport_entries be ON be.id=m.blue_entry_id
+       LEFT JOIN public.sport_athletes ba ON ba.id=be.athlete_id
+       WHERE b.event_id=$1 AND b.organizer_id=$2 ORDER BY c.name,c.belt,b.id,m.round_number,m.position
+       LIMIT 3000""",event_id,organizer_id)
+    return {"items":[dict(x) for x in rows]}
