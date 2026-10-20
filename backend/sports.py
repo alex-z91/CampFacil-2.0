@@ -1,6 +1,6 @@
 """Sport registration API: organizer-scoped, server-authorized, pending by default."""
 import uuid
-from datetime import date
+from datetime import date, datetime
 from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -15,7 +15,7 @@ class EventIn(BaseModel):
     has_gi:bool=True
     has_nogi:bool=False
     has_absolute:bool=False
-    registration_deadline:date|None=None
+    registration_deadline:datetime|None=None
 class AthleteIn(BaseModel):
     organizer_id:uuid.UUID
     full_name:str=Field(min_length=3,max_length=160)
@@ -103,7 +103,7 @@ async def create_entry(p:EntryIn,request:Request):
     async with request.app.state.pool.acquire() as conn:
         event=await conn.fetchrow("SELECT status FROM public.sport_events WHERE id=$1 AND organizer_id=$2",p.event_id,p.organizer_id)
         if not event or event["status"] in ("closed","cancelled"):raise HTTPException(409,"Evento indisponível")
-        blocked=await conn.fetchval("SELECT registration_closed_at IS NOT NULL OR (registration_deadline IS NOT NULL AND now() >= registration_deadline + interval '1 day') FROM public.sport_events WHERE id=$1 AND organizer_id=$2",p.event_id,p.organizer_id)
+        blocked=await conn.fetchval("SELECT registration_closed_at IS NOT NULL OR (registration_deadline IS NOT NULL AND now() >= registration_deadline) FROM public.sport_events WHERE id=$1 AND organizer_id=$2",p.event_id,p.organizer_id)
         if blocked:raise HTTPException(409,"Inscrições encerradas")
         athlete=await conn.fetchrow("SELECT birth_date,belt,weight_grams,sex FROM public.sport_athletes WHERE id=$1 AND organizer_id=$2",p.athlete_id,p.organizer_id)
         cat=await conn.fetchrow("SELECT belt,min_weight_grams,max_weight_grams,min_birth_year,max_birth_year,sex FROM public.sport_categories WHERE id=$1 AND event_id=$2 AND organizer_id=$3",p.category_id,p.event_id,p.organizer_id)
@@ -460,6 +460,8 @@ async def edit_entry(entry_id:uuid.UUID,p:EntryChange,request:Request):
           JOIN public.sport_events v ON v.id=e.event_id
           WHERE e.id=$1 AND e.organizer_id=$2 FOR UPDATE OF e""",entry_id,p.organizer_id)
         if not entry:raise HTTPException(404,"Inscrição não encontrada")
+        closed=await conn.fetchval("SELECT registration_closed_at IS NOT NULL OR (registration_deadline IS NOT NULL AND now()>=registration_deadline) FROM public.sport_events WHERE id=$1",entry["event_id"])
+        if closed:raise HTTPException(409,"Inscrições encerradas; alterações bloqueadas")
         if entry["payment_status"]!="pending":raise HTTPException(409,"Inscrição com pagamento confirmado ou cancelada exige revisão financeira; edição bloqueada")
         if entry["event_status"] in ("closed","cancelled"):raise HTTPException(409,"Campeonato encerrado")
         athlete=await conn.fetchrow("SELECT birth_date,belt,weight_grams,sex FROM public.sport_athletes WHERE id=$1 AND organizer_id=$2",entry["athlete_id"],p.organizer_id)
@@ -486,6 +488,8 @@ async def cancel_entry(entry_id:uuid.UUID,p:EntryCancel,request:Request):
       async with conn.transaction():
         entry=await conn.fetchrow("SELECT payment_status FROM public.sport_entries WHERE id=$1 AND organizer_id=$2 FOR UPDATE",entry_id,p.organizer_id)
         if not entry:raise HTTPException(404,"Inscrição não encontrada")
+        if await conn.fetchval("SELECT registration_closed_at IS NOT NULL OR (registration_deadline IS NOT NULL AND now()>=registration_deadline) FROM public.sport_events WHERE id=(SELECT event_id FROM public.sport_entries WHERE id=$1)",entry_id):
+            raise HTTPException(409,"Inscrições encerradas; cancelamento exige revisão administrativa")
         if entry["payment_status"]=="cancelled":raise HTTPException(409,"Inscrição já cancelada")
         if entry["payment_status"]!="pending":raise HTTPException(409,"Pagamento já confirmado. É necessária revisão financeira antes do cancelamento")
         await conn.execute("""UPDATE public.sport_entries SET payment_status='cancelled',eligible=false WHERE id=$1 AND organizer_id=$2""",entry_id,p.organizer_id)
@@ -521,7 +525,7 @@ async def bracket_preview(event_id:uuid.UUID,organizer_id:uuid.UUID,request:Requ
       ON e.category_id=c.id AND e.event_id=$1 AND e.eligible=true AND e.payment_status IN ('external_confirmed','online_confirmed','complimentary')
       WHERE c.event_id=$1 AND c.organizer_id=$2 GROUP BY c.id ORDER BY participants DESC,c.name LIMIT 1000""",event_id,organizer_id)
     saved=await pool.fetch("SELECT category_id::text,status FROM public.sport_brackets WHERE event_id=$1 AND organizer_id=$2",event_id,organizer_id)
-    return {"closed":bool(event["registration_closed_at"]) or bool(event["registration_deadline"] and event["registration_deadline"]<date.today()),"categories":[dict(g) for g in groups if g["participants"]>0],"brackets":[dict(x) for x in saved]}
+    return {"closed":bool(event["registration_closed_at"]) or bool(event["registration_deadline"] and event["registration_deadline"]<=datetime.now(event["registration_deadline"].tzinfo)),"categories":[dict(g) for g in groups if g["participants"]>0],"brackets":[dict(x) for x in saved]}
 
 @router.post("/events/{event_id}/generate-brackets")
 async def generate_brackets(event_id:uuid.UUID,p:BracketAction,request:Request):
