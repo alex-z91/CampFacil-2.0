@@ -428,6 +428,27 @@ async def send_organizer_approval_email(recipient,contact,organization,url):
                 server.send_message(msg)
     await asyncio.to_thread(deliver)
 
+@app.post("/api/platform/test-smtp")
+async def master_test_smtp(request:Request,user:Annotated[Identity,Depends(authenticated)]):
+    trusted_request(request)
+    if not await has_platform_role(request.app.state.pool,user.user_id,"platform.organizers.manage"):
+        raise HTTPException(403,"Acesso não autorizado")
+    if not user.email_verified:raise HTTPException(403,"Verifique seu e-mail antes do teste")
+    required=["MEUCAMP_SMTP_HOST","MEUCAMP_SMTP_FROM","MEUCAMP_SMTP_USER","MEUCAMP_SMTP_PASSWORD"]
+    missing=[key for key in required if not os.getenv(key)]
+    if missing:return {"ok":False,"status":"not_configured","missing":missing}
+    try:
+        await send_organizer_approval_email(user.email,"administrador MEUCAMP",
+            "TESTE DE SMTP — nenhum convite foi criado",FRONTEND_ORIGIN+"/login.html")
+    except Exception as exc:
+        import smtplib
+        if isinstance(exc,smtplib.SMTPAuthenticationError):category="authentication"
+        elif isinstance(exc,(OSError,TimeoutError)):category="connection"
+        else:category="smtp_error"
+        return {"ok":False,"status":category}
+    return {"ok":True,"status":"accepted_by_smtp","recipient":user.email}
+
+
 class ApplicationReview(BaseModel):
     status: Literal["reviewing", "approved", "rejected"]
 
