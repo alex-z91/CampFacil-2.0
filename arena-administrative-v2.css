@@ -61,3 +61,16 @@ body{background:var(--ap-bg);color:var(--ap-ink);font-family:Inter,ui-sans-serif
 @media(min-width:700px){.kpis{grid-template-columns:repeat(4,minmax(0,1fr))}.real-form{grid-template-columns:repeat(2,minmax(0,1fr))}.bracket-actions{display:flex;flex-wrap:wrap}.bracket-actions .btn{width:auto}}
 @media(min-width:1050px){.kpis{gap:16px}.kpi{padding:22px}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{transition:none!important;animation:none!important}}
+
+/* Master navigation remains available on mobile rather than disappearing. */
+@media(max-width:850px){
+ body:has(.adminmain) .shell{display:block}
+ body:has(.adminmain) .sidebar{display:block!important;position:static;height:auto;width:100%!important;padding:14px 16px!important}
+ body:has(.adminmain) .sidebar .workspace,body:has(.adminmain) .sidebar .group-label,body:has(.adminmain) .sidebar .side-bottom{display:none}
+ body:has(.adminmain) .sidebar .brand{padding:0 0 10px}
+ body:has(.adminmain) .adminnav{display:flex;overflow-x:auto;gap:7px;padding:4px 0 8px}
+ body:has(.adminmain) .adminnav button{white-space:nowrap;flex:none;padding:10px 12px}
+ body:has(.adminmain) .topbar{min-height:58px}
+ body:has(.adminmain) .topright{overflow-x:auto;gap:5px}
+ body:has(.adminmain) .topright .btn{white-space:nowrap}
+}
