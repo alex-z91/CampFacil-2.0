@@ -141,6 +141,8 @@ async def confirm_external(entry_id:uuid.UUID,p:ExternalConfirmation,request:Req
         entry=await conn.fetchrow("SELECT * FROM public.sport_entries WHERE id=$1 AND organizer_id=$2 FOR UPDATE",entry_id,p.organizer_id)
         if not entry:raise HTTPException(404,"Inscrição não encontrada")
         if entry["payment_status"]=="external_confirmed":return {"ok":True,"duplicate":True}
+        if await conn.fetchval("SELECT registration_closed_at IS NOT NULL OR (registration_deadline IS NOT NULL AND now()>=registration_deadline) FROM public.sport_events WHERE id=$1",entry["event_id"]):
+            raise HTTPException(409,"Inscrições encerradas. A regularização financeira exige revisão administrativa antes do chaveamento")
         if entry["payment_status"]!="pending" or entry["base_cents"]==0:raise HTTPException(409,"Inscrição não elegível à confirmação externa")
         cfg=await policy(conn,p.organizer_id)
         cost=commission(entry["base_cents"],cfg["percent_bps"],cfg["fixed_cents"])
