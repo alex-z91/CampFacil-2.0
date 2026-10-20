@@ -594,3 +594,17 @@ async def view_brackets(event_id:uuid.UUID,organizer_id:uuid.UUID,request:Reques
        WHERE b.event_id=$1 AND b.organizer_id=$2 ORDER BY c.name,c.belt,b.id,m.round_number,m.position
        LIMIT 3000""",event_id,organizer_id)
     return {"items":[dict(x) for x in rows]}
+
+@router.get("/public/events/{event_id}/participants")
+async def public_participants(event_id:uuid.UUID,request:Request):
+    # Public output intentionally excludes bracket structure, payment and private athlete data.
+    event=await request.app.state.pool.fetchrow("""SELECT id::text,name,event_date,city
+        FROM public.sport_events WHERE id=$1 AND status='published'""",event_id)
+    if not event:raise HTTPException(404,"Evento não está disponível para consulta pública")
+    rows=await request.app.state.pool.fetch("""SELECT a.full_name,c.name category,c.belt,c.modality,c.sex
+      FROM public.sport_entries e JOIN public.sport_athletes a ON a.id=e.athlete_id
+      JOIN public.sport_categories c ON c.id=e.category_id
+      WHERE e.event_id=$1 AND e.eligible=true
+        AND e.payment_status IN ('external_confirmed','online_confirmed','complimentary')
+      ORDER BY c.modality,c.name,c.belt,a.full_name LIMIT 5000""",event_id)
+    return {"event":dict(event),"participants":[dict(r) for r in rows]}
