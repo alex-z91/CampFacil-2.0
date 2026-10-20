@@ -413,9 +413,9 @@ async def send_organizer_approval_email(recipient,contact,organization,url):
     host=os.environ["MEUCAMP_SMTP_HOST"];sender=os.environ["MEUCAMP_SMTP_FROM"]
     port=int(os.getenv("MEUCAMP_SMTP_PORT","465"))
     user=os.getenv("MEUCAMP_SMTP_USER","");password=os.getenv("MEUCAMP_SMTP_PASSWORD","")
-    msg=EmailMessage();msg["From"]=formataddr(("MEUCAMP",sender));msg["To"]=recipient
-    msg["Subject"]="Acesso ao MEUCAMP aprovado"
-    msg.set_content(f"Olá, {contact}!\n\nSua organização {organization} foi aprovada.\nAtive sua conta sem refazer o cadastro:\n{url}\n\nEste convite expira em 7 dias.\nEquipe MEUCAMP")
+    msg=EmailMessage();msg["From"]=formataddr(("Arena Pro",sender));msg["To"]=recipient
+    msg["Subject"]="Arena Pro — acesso aprovado"
+    msg.set_content(f"Olá, {contact}!\n\nSua organização {organization} foi aprovada.\nAtive sua conta sem refazer o cadastro:\n{url}\n\nEste convite expira em 7 dias.\nEquipe Arena Pro")
     def deliver():
         if port==465:
             with smtplib.SMTP_SSL(host,port,timeout=12,context=ssl.create_default_context()) as server:
@@ -429,29 +429,39 @@ async def send_organizer_approval_email(recipient,contact,organization,url):
     await asyncio.to_thread(deliver)
 
 async def send_meucamp_email(recipient, contact, organization, url):
-    """Prefer Resend HTTPS when configured; retain SMTP fallback."""
-    api_key = os.getenv("RESEND_API_KEY")
-    if not api_key:
+    """Deliver Arena Pro transactional email over Resend HTTPS, with SMTP fallback."""
+    from html import escape
+    test = organization.startswith("TESTE")
+    subject = "Arena Pro — teste de envio" if test else "Arena Pro — sua organização foi aprovada"
+    body = ("Este é um teste de entrega. Nenhum convite foi criado." if test
+            else f"Sua organização {organization} foi aprovada. Ative sua conta: {url}\nO convite expira em 7 dias.")
+    text_body = f"Olá, {contact}!\n\n{body}\n\nEquipe Arena Pro"
+    if not os.getenv("RESEND_API_KEY"):
         await send_organizer_approval_email(recipient, contact, organization, url)
         return "smtp"
-    sender = os.getenv("RESEND_FROM_EMAIL", "MEUCAMP <convites@alexcoder.space>")
+    from_email = os.getenv("RESEND_FROM_EMAIL", "Arena Pro <convites@alexcoder.space>")
     reply_to = os.getenv("RESEND_REPLY_TO", "alexdesigner.one@gmail.com")
-    subject = "Seu acesso ao MEUCAMP foi aprovado" if "TESTE" not in organization else "MEUCAMP — Teste de envio Resend"
-    content = (f"Olá, {contact}!\n\n"
-               + (f"Sua organização {organization} foi aprovada.\nAtive seu acesso: {url}\n\nO convite expira em 7 dias."
-                  if "TESTE" not in organization else "Este é um teste de entrega pela API HTTPS do Resend. Nenhum convite foi criado.")
-               + "\n\nEquipe MEUCAMP")
-    async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
-        res = await client.post("https://api.resend.com/emails",
-            headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
-            json={"from":sender,"to":[recipient],"reply_to":reply_to,
-                  "subject":subject,"text":content})
+    detail = ("Este é um teste de envio pela Arena Pro. Nenhum convite foi gerado." if test
+              else f"A organização <strong>{escape(organization)}</strong> foi aprovada. Sua conta está pronta para ativação.")
+    action = ("" if test else '<p style="margin:30px 0"><a href="'+escape(url,quote=True)+'" style="background:#ff9825;color:#191919;font-weight:600;text-decoration:none;border-radius:7px;padding:13px 24px;display:inline-block">Ativar meu acesso</a></p><p style="font-size:12px;color:#666">Este link expira em 7 dias. Não compartilhe com outras pessoas.</p>')
+    html = ('<div style="background:#f6f6f6;padding:36px 12px;font-family:Arial,sans-serif;color:#242424">'
+            '<div style="max-width:560px;background:#fff;margin:auto;border-radius:12px;border:1px solid #eee;padding:32px">'
+            '<div style="font-size:26px;font-weight:600;color:#191919"><span style="color:#ff9825">arena</span> pro</div>'
+            '<div style="height:3px;width:44px;background:#ff9825;margin:20px 0"></div>'
+            '<h1 style="font-size:23px;font-weight:600">Olá, '+escape(contact)+'!</h1>'
+            '<p style="font-size:15px;line-height:1.7">'+detail+'</p>'+action+
+            '<p style="font-size:12px;color:#777;margin-top:30px">Arena Pro · Gestão de campeonatos e eventos esportivos</p>'
+            '</div></div>')
+    async with httpx.AsyncClient(timeout=15,follow_redirects=False) as client:
+        res=await client.post("https://api.resend.com/emails",
+            headers={"Authorization":"Bearer "+os.environ["RESEND_API_KEY"],"Content-Type":"application/json"},
+            json={"from":from_email,"to":[recipient],"reply_to":reply_to,
+                  "subject":subject,"text":text_body,"html":html})
     if res.status_code not in (200,201):
         import logging
-        logging.getLogger("meucamp.email").warning("Resend rejected delivery: http_status=%s",res.status_code)
-        raise RuntimeError("resend_http_"+str(res.status_code))
+        logging.getLogger("arena_pro.email").warning("Resend returned HTTP %s",res.status_code)
+        raise RuntimeError("email_provider_rejected")
     return "resend"
-
 
 @app.post("/api/platform/test-smtp")
 async def master_test_smtp(request:Request,user:Annotated[Identity,Depends(authenticated)]):
