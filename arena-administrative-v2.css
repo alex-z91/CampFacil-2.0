@@ -74,3 +74,7 @@ body{background:var(--ap-bg);color:var(--ap-ink);font-family:Inter,ui-sans-serif
  body:has(.adminmain) .topright{overflow-x:auto;gap:5px}
  body:has(.adminmain) .topright .btn{white-space:nowrap}
 }
+
+@media(max-width:699px){
+ .table-wrap .table td[data-label]:not(:first-child):before{content:attr(data-label);font-size:11px;color:#777;flex:0 0 40%;text-align:left;font-weight:500}
+}
