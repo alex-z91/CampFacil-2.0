@@ -15,6 +15,7 @@ class EventIn(BaseModel):
     has_gi:bool=True
     has_nogi:bool=False
     has_absolute:bool=False
+    registration_deadline:date|None=None
 class AthleteIn(BaseModel):
     organizer_id:uuid.UUID
     full_name:str=Field(min_length=3,max_length=160)
@@ -55,10 +56,10 @@ async def create_event(p:EventIn,request:Request):
     async with request.app.state.pool.acquire() as conn:
       async with conn.transaction():
         row=await conn.fetchrow("""INSERT INTO public.sport_events
-            (organizer_id,name,event_date,city,created_by,has_gi,has_nogi,has_absolute)
-            VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id::text,status""",
+            (organizer_id,name,event_date,city,created_by,has_gi,has_nogi,has_absolute,registration_deadline)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id::text,status""",
             p.organizer_id,p.name.strip(),p.event_date,p.city.strip(),user.user_id,
-            p.has_gi,p.has_nogi,p.has_absolute)
+            p.has_gi,p.has_nogi,p.has_absolute,p.registration_deadline)
         created=await build_default_categories(conn,p.organizer_id,uuid.UUID(row["id"]),p.event_date.year,
             [m for m,enabled in (("gi",p.has_gi),("nogi",p.has_nogi)) if enabled],p.has_absolute)
     return {**dict(row),"categories_created":created}
@@ -66,7 +67,7 @@ async def create_event(p:EventIn,request:Request):
 @router.get("/events/{organizer_id}")
 async def list_events(organizer_id:uuid.UUID,request:Request):
     await authorized(request,organizer_id,"organizer.events.read")
-    rows=await request.app.state.pool.fetch("""SELECT id::text,name,event_date,city,status,has_gi,has_nogi,has_absolute FROM public.sport_events
+    rows=await request.app.state.pool.fetch("""SELECT id::text,name,event_date,city,status,has_gi,has_nogi,has_absolute,registration_deadline,registration_closed_at FROM public.sport_events
         WHERE organizer_id=$1 ORDER BY event_date DESC LIMIT 100""",organizer_id)
     return {"items":[dict(row) for row in rows]}
 
@@ -102,6 +103,8 @@ async def create_entry(p:EntryIn,request:Request):
     async with request.app.state.pool.acquire() as conn:
         event=await conn.fetchrow("SELECT status FROM public.sport_events WHERE id=$1 AND organizer_id=$2",p.event_id,p.organizer_id)
         if not event or event["status"] in ("closed","cancelled"):raise HTTPException(409,"Evento indisponível")
+        blocked=await conn.fetchval("SELECT registration_closed_at IS NOT NULL OR (registration_deadline IS NOT NULL AND now() >= registration_deadline + interval '1 day') FROM public.sport_events WHERE id=$1 AND organizer_id=$2",p.event_id,p.organizer_id)
+        if blocked:raise HTTPException(409,"Inscrições encerradas")
         athlete=await conn.fetchrow("SELECT birth_date,belt,weight_grams,sex FROM public.sport_athletes WHERE id=$1 AND organizer_id=$2",p.athlete_id,p.organizer_id)
         cat=await conn.fetchrow("SELECT belt,min_weight_grams,max_weight_grams,min_birth_year,max_birth_year,sex FROM public.sport_categories WHERE id=$1 AND event_id=$2 AND organizer_id=$3",p.category_id,p.event_id,p.organizer_id)
         if not athlete or not cat:raise HTTPException(404,"Atleta ou categoria não encontrado")
@@ -489,3 +492,83 @@ async def cancel_entry(entry_id:uuid.UUID,p:EntryCancel,request:Request):
         await conn.execute("""INSERT INTO public.finance_audit(organizer_id,actor_user_id,action,reference_id)
           VALUES($1,$2,'sport_entry_cancelled', $3)""",p.organizer_id,user.user_id,entry_id)
     return {"ok":True}
+
+class BracketAction(BaseModel):
+    organizer_id:uuid.UUID
+
+@router.post("/events/{event_id}/close-registrations")
+async def close_registrations(event_id:uuid.UUID,p:BracketAction,request:Request):
+    require_origin(request)
+    user=await authorized(request,p.organizer_id,"organizer.events.manage")
+    async with request.app.state.pool.acquire() as conn:
+      async with conn.transaction():
+        event=await conn.fetchrow("SELECT status,registration_closed_at FROM public.sport_events WHERE id=$1 AND organizer_id=$2 FOR UPDATE",event_id,p.organizer_id)
+        if not event:raise HTTPException(404,"Evento não encontrado")
+        if event["status"] in ("closed","cancelled"):raise HTTPException(409,"Evento indisponível")
+        if event["registration_closed_at"]:return {"ok":True,"already_closed":True}
+        await conn.execute("UPDATE public.sport_events SET registration_closed_at=now() WHERE id=$1",event_id)
+        await conn.execute("INSERT INTO public.finance_audit(organizer_id,actor_user_id,action,reference_id) VALUES($1,$2,'sport_registrations_closed',$3)",p.organizer_id,user.user_id,event_id)
+    return {"ok":True}
+
+@router.get("/events/{event_id}/bracket-preview/{organizer_id}")
+async def bracket_preview(event_id:uuid.UUID,organizer_id:uuid.UUID,request:Request):
+    await authorized(request,organizer_id,"organizer.events.read")
+    pool=request.app.state.pool
+    event=await pool.fetchrow("SELECT registration_closed_at,registration_deadline FROM public.sport_events WHERE id=$1 AND organizer_id=$2",event_id,organizer_id)
+    if not event:raise HTTPException(404,"Evento não encontrado")
+    groups=await pool.fetch("""SELECT c.id::text category_id,c.name,c.belt,c.modality,COUNT(e.id)::int participants
+      FROM public.sport_categories c LEFT JOIN public.sport_entries e
+      ON e.category_id=c.id AND e.event_id=$1 AND e.eligible=true AND e.payment_status IN ('external_confirmed','online_confirmed','complimentary')
+      WHERE c.event_id=$1 AND c.organizer_id=$2 GROUP BY c.id ORDER BY participants DESC,c.name LIMIT 1000""",event_id,organizer_id)
+    saved=await pool.fetch("SELECT category_id::text,status FROM public.sport_brackets WHERE event_id=$1 AND organizer_id=$2",event_id,organizer_id)
+    return {"closed":bool(event["registration_closed_at"]) or bool(event["registration_deadline"] and event["registration_deadline"]<date.today()),"categories":[dict(g) for g in groups if g["participants"]>0],"brackets":[dict(x) for x in saved]}
+
+@router.post("/events/{event_id}/generate-brackets")
+async def generate_brackets(event_id:uuid.UUID,p:BracketAction,request:Request):
+    require_origin(request)
+    user=await authorized(request,p.organizer_id,"organizer.events.manage")
+    count=0;matches=0
+    async with request.app.state.pool.acquire() as conn:
+      async with conn.transaction():
+        event=await conn.fetchrow("SELECT registration_closed_at,registration_deadline,status FROM public.sport_events WHERE id=$1 AND organizer_id=$2 FOR UPDATE",event_id,p.organizer_id)
+        if not event:raise HTTPException(404,"Evento não encontrado")
+        if event["status"] in ("closed","cancelled"):raise HTTPException(409,"Evento indisponível")
+        if not (event["registration_closed_at"] or (event["registration_deadline"] and event["registration_deadline"]<date.today())):raise HTTPException(409,"Encerre as inscrições antes de gerar chaves")
+        if await conn.fetchval("SELECT COUNT(*) FROM public.sport_brackets WHERE event_id=$1",event_id):raise HTTPException(409,"Chaves já geradas. Não serão sobrescritas automaticamente")
+        rows=await conn.fetch("""SELECT e.id entry_id,e.category_id,a.team FROM public.sport_entries e
+           JOIN public.sport_athletes a ON a.id=e.athlete_id WHERE e.event_id=$1 AND e.organizer_id=$2 AND e.eligible=true
+           AND e.payment_status IN ('external_confirmed','online_confirmed','complimentary')
+           ORDER BY e.category_id,a.team,e.id""",event_id,p.organizer_id)
+        grouped={}
+        for r in rows:grouped.setdefault(r["category_id"],[]).append(r)
+        for category,athletes in grouped.items():
+            if len(athletes)<2:continue
+            bracket=await conn.fetchval("""INSERT INTO public.sport_brackets(organizer_id,event_id,category_id,created_by)
+               VALUES($1,$2,$3,$4) RETURNING id""",p.organizer_id,event_id,category,user.user_id)
+            size=1<<(len(athletes)-1).bit_length()
+            # A bracket consists of all rounds and fixed slots; only opening-round slots have entries.
+            for rnd in range(1,size.bit_length()):
+                for idx in range(size//(2**rnd)):
+                    red=athletes[2*idx]["entry_id"] if rnd==1 and 2*idx<len(athletes) else None
+                    blue=athletes[2*idx+1]["entry_id"] if rnd==1 and 2*idx+1<len(athletes) else None
+                    await conn.execute("""INSERT INTO public.sport_bracket_matches(bracket_id,round_number,position,red_entry_id,blue_entry_id,status)
+                       VALUES($1,$2,$3,$4,$5,$6)""",bracket,rnd,idx+1,red,blue,"bye" if rnd==1 and red and not blue else "scheduled")
+                    matches+=1
+            count+=1
+        await conn.execute("INSERT INTO public.finance_audit(organizer_id,actor_user_id,action,reference_id) VALUES($1,$2,'sport_brackets_generated',$3)",p.organizer_id,user.user_id,event_id)
+    return {"brackets_created":count,"matches_created":matches,"status":"draft"}
+
+@router.post("/events/{event_id}/publish-brackets")
+async def publish_brackets(event_id:uuid.UUID,p:BracketAction,request:Request):
+    require_origin(request)
+    user=await authorized(request,p.organizer_id,"organizer.events.manage")
+    async with request.app.state.pool.acquire() as conn:
+      async with conn.transaction():
+        event=await conn.fetchrow("SELECT registration_closed_at,registration_deadline FROM public.sport_events WHERE id=$1 AND organizer_id=$2 FOR UPDATE",event_id,p.organizer_id)
+        if not event:raise HTTPException(404,"Evento não encontrado")
+        if not (event["registration_closed_at"] or (event["registration_deadline"] and event["registration_deadline"]<date.today())):raise HTTPException(409,"Inscrições não encerradas")
+        n=await conn.fetchval("SELECT count(*) FROM public.sport_brackets WHERE event_id=$1 AND organizer_id=$2",event_id,p.organizer_id)
+        if not n:raise HTTPException(409,"Gere e confira as chaves primeiro")
+        await conn.execute("UPDATE public.sport_brackets SET status='published',published_at=COALESCE(published_at,now()) WHERE event_id=$1 AND organizer_id=$2 AND status='draft'",event_id,p.organizer_id)
+        await conn.execute("INSERT INTO public.finance_audit(organizer_id,actor_user_id,action,reference_id) VALUES($1,$2,'sport_brackets_published',$3)",p.organizer_id,user.user_id,event_id)
+    return {"ok":True,"published_brackets":n}
