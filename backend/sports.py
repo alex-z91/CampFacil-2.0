@@ -539,7 +539,7 @@ async def generate_brackets(event_id:uuid.UUID,p:BracketAction,request:Request):
         event=await conn.fetchrow("SELECT registration_closed_at,registration_deadline,status FROM public.sport_events WHERE id=$1 AND organizer_id=$2 FOR UPDATE",event_id,p.organizer_id)
         if not event:raise HTTPException(404,"Evento não encontrado")
         if event["status"] in ("closed","cancelled"):raise HTTPException(409,"Evento indisponível")
-        if not (event["registration_closed_at"] or (event["registration_deadline"] and event["registration_deadline"]<date.today())):raise HTTPException(409,"Encerre as inscrições antes de gerar chaves")
+        if not (event["registration_closed_at"] or (event["registration_deadline"] and event["registration_deadline"]<=datetime.now(event["registration_deadline"].tzinfo))):raise HTTPException(409,"Encerre as inscrições antes de gerar chaves")
         if await conn.fetchval("SELECT COUNT(*) FROM public.sport_brackets WHERE event_id=$1",event_id):raise HTTPException(409,"Chaves já geradas. Não serão sobrescritas automaticamente")
         rows=await conn.fetch("""SELECT e.id entry_id,e.category_id,a.team FROM public.sport_entries e
            JOIN public.sport_athletes a ON a.id=e.athlete_id WHERE e.event_id=$1 AND e.organizer_id=$2 AND e.eligible=true
@@ -549,17 +549,50 @@ async def generate_brackets(event_id:uuid.UUID,p:BracketAction,request:Request):
         for r in rows:grouped.setdefault(r["category_id"],[]).append(r)
         for category,athletes in grouped.items():
             if len(athletes)<2:continue
+            # Spread teammates across opening-round pairings whenever possible.
+            pools={}
+            for athlete in athletes:pools.setdefault((athlete["team"] or "").strip().lower(),[]).append(athlete)
+            ordered=[]
+            while any(pools.values()):
+                for team in sorted(pools,key=lambda k:len(pools[k]),reverse=True):
+                    if pools[team]:ordered.append(pools[team].pop(0))
+            size=1<<(len(ordered)-1).bit_length()
+            byes=size-len(ordered)
+            # Seed BYEs as distributed pairs, not only at the tail of the draw.
+            slots=[None]*size
+            bye_pairs=set()
+            if byes:
+                for j in range(byes):
+                    bye_pairs.add((j*(size//2//byes)) % (size//2))
+            pairs=list(range(size//2))
+            # Fill an automatic advancement slot in each designated pair.
+            for pair in pairs:
+                if pair in bye_pairs:
+                    slots[2*pair]=ordered.pop(0)["entry_id"]
+                else:
+                    slots[2*pair]=ordered.pop(0)["entry_id"]
+                    slots[2*pair+1]=ordered.pop(0)["entry_id"]
             bracket=await conn.fetchval("""INSERT INTO public.sport_brackets(organizer_id,event_id,category_id,created_by)
                VALUES($1,$2,$3,$4) RETURNING id""",p.organizer_id,event_id,category,user.user_id)
-            size=1<<(len(athletes)-1).bit_length()
-            # A bracket consists of all rounds and fixed slots; only opening-round slots have entries.
             for rnd in range(1,size.bit_length()):
                 for idx in range(size//(2**rnd)):
-                    red=athletes[2*idx]["entry_id"] if rnd==1 and 2*idx<len(athletes) else None
-                    blue=athletes[2*idx+1]["entry_id"] if rnd==1 and 2*idx+1<len(athletes) else None
-                    await conn.execute("""INSERT INTO public.sport_bracket_matches(bracket_id,round_number,position,red_entry_id,blue_entry_id,status)
-                       VALUES($1,$2,$3,$4,$5,$6)""",bracket,rnd,idx+1,red,blue,"bye" if rnd==1 and red and not blue else "scheduled")
+                    red=slots[2*idx] if rnd==1 else None
+                    blue=slots[2*idx+1] if rnd==1 else None
+                    is_bye=rnd==1 and ((red is None)!=(blue is None))
+                    winner=(red or blue) if is_bye else None
+                    await conn.execute("""INSERT INTO public.sport_bracket_matches
+                       (bracket_id,round_number,position,red_entry_id,blue_entry_id,status,winner_entry_id)
+                       VALUES($1,$2,$3,$4,$5,$6,$7)""",bracket,rnd,idx+1,red,blue,"bye" if is_bye else "scheduled",winner)
                     matches+=1
+            # Pass BYE winners to the corresponding next-round slot.
+            if size>2:
+                opening=await conn.fetch("""SELECT position,winner_entry_id FROM public.sport_bracket_matches
+                   WHERE bracket_id=$1 AND round_number=1 AND status='bye'""",bracket)
+                for item in opening:
+                    next_position=(item["position"]+1)//2
+                    field="red_entry_id" if item["position"]%2 else "blue_entry_id"
+                    await conn.execute("UPDATE public.sport_bracket_matches SET "+field+"=$1 WHERE bracket_id=$2 AND round_number=2 AND position=$3",
+                      item["winner_entry_id"],bracket,next_position)
             count+=1
         await conn.execute("INSERT INTO public.finance_audit(organizer_id,actor_user_id,action,reference_id) VALUES($1,$2,'sport_brackets_generated',$3)",p.organizer_id,user.user_id,event_id)
     return {"brackets_created":count,"matches_created":matches,"status":"draft"}
