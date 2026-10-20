@@ -10,7 +10,7 @@ a{color:#ba640d}
 .ap-wordmark{display:inline-flex;align-items:center;gap:10px;min-width:0}
 .ap-wordmark img{width:clamp(145px,40vw,202px);height:52px;object-fit:contain;object-position:left center}
 .panel,.card,.box,.action-card,.roster-group{border-color:var(--ap-border)!important}
-button:not(.secondary):not(.danger):not(.sidebar-toggle):not(.mobile-menu):not(.public-menu-toggle),.action,.submit,.navbtn{background:var(--ap-orange);color:#202020}
+.panel>button,.card button[type=submit],form button[type=submit],.action,.submit,.navbtn{background:var(--ap-orange);color:#202020}
 button:disabled{opacity:.5}
 input,select,textarea{background:#fff;color:#272727;border-color:#d8d2cc}
 .notice,#message,#status{overflow-wrap:anywhere}
