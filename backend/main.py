@@ -433,7 +433,7 @@ async def master_test_smtp(request:Request,user:Annotated[Identity,Depends(authe
     trusted_request(request)
     if not await has_platform_role(request.app.state.pool,user.user_id,"platform.organizers.manage"):
         raise HTTPException(403,"Acesso não autorizado")
-    if not user.email_verified:raise HTTPException(403,"Verifique seu e-mail antes do teste")
+   
     required=["MEUCAMP_SMTP_HOST","MEUCAMP_SMTP_FROM","MEUCAMP_SMTP_USER","MEUCAMP_SMTP_PASSWORD"]
     missing=[key for key in required if not os.getenv(key)]
     if missing:return {"ok":False,"status":"not_configured","missing":missing}
