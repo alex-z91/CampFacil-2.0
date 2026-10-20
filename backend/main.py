@@ -428,17 +428,42 @@ async def send_organizer_approval_email(recipient,contact,organization,url):
                 server.send_message(msg)
     await asyncio.to_thread(deliver)
 
+async def send_meucamp_email(recipient, contact, organization, url):
+    """Prefer Resend HTTPS when configured; retain SMTP fallback."""
+    api_key = os.getenv("RESEND_API_KEY")
+    if not api_key:
+        await send_organizer_approval_email(recipient, contact, organization, url)
+        return "smtp"
+    sender = os.getenv("RESEND_FROM_EMAIL", "MEUCAMP <convites@alexcoder.space>")
+    reply_to = os.getenv("RESEND_REPLY_TO", "alexdesigner.one@gmail.com")
+    subject = "Seu acesso ao MEUCAMP foi aprovado" if "TESTE" not in organization else "MEUCAMP — Teste de envio Resend"
+    content = (f"Olá, {contact}!\n\n"
+               + (f"Sua organização {organization} foi aprovada.\nAtive seu acesso: {url}\n\nO convite expira em 7 dias."
+                  if "TESTE" not in organization else "Este é um teste de entrega pela API HTTPS do Resend. Nenhum convite foi criado.")
+               + "\n\nEquipe MEUCAMP")
+    async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
+        res = await client.post("https://api.resend.com/emails",
+            headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
+            json={"from":sender,"to":[recipient],"reply_to":reply_to,
+                  "subject":subject,"text":content})
+    if res.status_code not in (200,201):
+        import logging
+        logging.getLogger("meucamp.email").warning("Resend rejected delivery: http_status=%s",res.status_code)
+        raise RuntimeError("resend_http_"+str(res.status_code))
+    return "resend"
+
+
 @app.post("/api/platform/test-smtp")
 async def master_test_smtp(request:Request,user:Annotated[Identity,Depends(authenticated)]):
     trusted_request(request)
     if not await has_platform_role(request.app.state.pool,user.user_id,"platform.organizers.manage"):
         raise HTTPException(403,"Acesso não autorizado")
    
-    required=["MEUCAMP_SMTP_HOST","MEUCAMP_SMTP_FROM","MEUCAMP_SMTP_USER","MEUCAMP_SMTP_PASSWORD"]
+    required=[] if os.getenv("RESEND_API_KEY") else ["MEUCAMP_SMTP_HOST","MEUCAMP_SMTP_FROM","MEUCAMP_SMTP_USER","MEUCAMP_SMTP_PASSWORD"]
     missing=[key for key in required if not os.getenv(key)]
     if missing:return {"ok":False,"status":"not_configured","missing":missing}
     try:
-        await send_organizer_approval_email(user.email,"administrador MEUCAMP",
+        provider=await send_meucamp_email(user.email,"administrador MEUCAMP",
             "TESTE DE SMTP — nenhum convite foi criado",FRONTEND_ORIGIN+"/login.html")
     except Exception as exc:
         import smtplib
@@ -446,7 +471,7 @@ async def master_test_smtp(request:Request,user:Annotated[Identity,Depends(authe
         elif isinstance(exc,(OSError,TimeoutError)):category="connection"
         else:category="smtp_error"
         return {"ok":False,"status":category}
-    return {"ok":True,"status":"accepted_by_smtp","recipient":user.email}
+    return {"ok":True,"status":"accepted_by_provider","provider":provider,"recipient":user.email}
 
 
 class ApplicationReview(BaseModel):
@@ -502,11 +527,11 @@ async def master_review_application(application_id: str, payload: ApplicationRev
                 VALUES($1,'organizer',$2,'admin',now()+interval '7 days',$3,$4)""",
                 app_row["email"].strip().lower(),oid,digest,parsed_id)
             activation_url=FRONTEND_ORIGIN+"/aceitar-convite.html?token="+token
-            if not os.getenv("MEUCAMP_SMTP_HOST") or not os.getenv("MEUCAMP_SMTP_FROM"):
+            if not os.getenv("RESEND_API_KEY") and (not os.getenv("MEUCAMP_SMTP_HOST") or not os.getenv("MEUCAMP_SMTP_FROM")):
                 notification="email_not_configured"
             else:
                 try:
-                    await send_organizer_approval_email(app_row["email"],app_row["contact_name"],
+                    await send_meucamp_email(app_row["email"],app_row["contact_name"],
                         app_row["organization_name"],activation_url)
                     notification="sent"
                 except Exception:
