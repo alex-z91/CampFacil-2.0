@@ -406,6 +406,28 @@ async def master_list_applications(request: Request,
     return {"items": [dict(r) for r in rows]}
 
 
+async def send_organizer_approval_email(recipient,contact,organization,url):
+    import asyncio,smtplib,ssl
+    from email.message import EmailMessage
+    from email.utils import formataddr
+    host=os.environ["MEUCAMP_SMTP_HOST"];sender=os.environ["MEUCAMP_SMTP_FROM"]
+    port=int(os.getenv("MEUCAMP_SMTP_PORT","465"))
+    user=os.getenv("MEUCAMP_SMTP_USER","");password=os.getenv("MEUCAMP_SMTP_PASSWORD","")
+    msg=EmailMessage();msg["From"]=formataddr(("MEUCAMP",sender));msg["To"]=recipient
+    msg["Subject"]="Acesso ao MEUCAMP aprovado"
+    msg.set_content(f"Olá, {contact}!\n\nSua organização {organization} foi aprovada.\nAtive sua conta sem refazer o cadastro:\n{url}\n\nEste convite expira em 7 dias.\nEquipe MEUCAMP")
+    def deliver():
+        if port==465:
+            with smtplib.SMTP_SSL(host,port,timeout=12,context=ssl.create_default_context()) as server:
+                if user:server.login(user,password)
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(host,port,timeout=12) as server:
+                server.starttls(context=ssl.create_default_context())
+                if user:server.login(user,password)
+                server.send_message(msg)
+    await asyncio.to_thread(deliver)
+
 class ApplicationReview(BaseModel):
     status: Literal["reviewing", "approved", "rejected"]
 
@@ -446,7 +468,30 @@ async def master_review_application(application_id: str, payload: ApplicationRev
                     (application_id,organizer_id,actor_user_id,event)
                     VALUES($1,$2,$3,'organization_prepared')
                 """, parsed_id, oid, user.user_id)
-    return {**dict(result), "access": "awaiting_verified_owner" if payload.status=="approved" else "unchanged"}
+    notification="not_applicable";activation_url=None
+    if payload.status=="approved":
+        token=__import__("secrets").token_urlsafe(40)
+        digest=__import__("hashlib").sha256(token.encode()).hexdigest()
+        existing=await request.app.state.pool.fetchval("SELECT id FROM public.access_invites WHERE application_id=$1",parsed_id)
+        if existing:
+            notification="existing_invite"
+        else:
+            await request.app.state.pool.execute("""INSERT INTO public.access_invites
+                (email,scope,organizer_id,role,expires_at,token_hash,application_id)
+                VALUES($1,'organizer',$2,'admin',now()+interval '7 days',$3,$4)""",
+                app_row["email"].strip().lower(),oid,digest,parsed_id)
+            activation_url=FRONTEND_ORIGIN+"/aceitar-convite.html?token="+token
+            if not os.getenv("MEUCAMP_SMTP_HOST") or not os.getenv("MEUCAMP_SMTP_FROM"):
+                notification="email_not_configured"
+            else:
+                try:
+                    await send_organizer_approval_email(app_row["email"],app_row["contact_name"],
+                        app_row["organization_name"],activation_url)
+                    notification="sent"
+                except Exception:
+                    notification="send_failed"
+    return {**dict(result),"access":"awaiting_verified_owner" if payload.status=="approved" else "unchanged",
+            "email_notification":notification,"activation_url":activation_url if notification!="sent" else None}
 
 # Convites de uso único: nunca armazenar o token em texto puro no banco.
 import hashlib
