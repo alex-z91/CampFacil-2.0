@@ -370,7 +370,12 @@ async def submit_application(pool, data: OrganizerApplicationIn, source: str):
              p["phone"], p["city"], p["state"], p["document_number"], source)
     except asyncpg.UniqueViolationError:
         raise HTTPException(409, "Já existe solicitação em análise para esta organização e e-mail")
-    return {"ok": True, "id": row["id"], "status": "requested"}
+    access_token = __import__("secrets").token_urlsafe(40)
+    access_hash = __import__("hashlib").sha256(access_token.encode()).hexdigest()
+    await pool.execute("""INSERT INTO public.organizer_application_access(application_id,token_hash)
+        VALUES($1,$2)""",__import__("uuid").UUID(row["id"]),access_hash)
+    return {"ok":True,"id":row["id"],"status":"requested",
+            "tracking_url":FRONTEND_ORIGIN+"/acompanhar-acesso.html?token="+access_token}
 
 
 @app.post("/api/public/organizer-applications", status_code=201)
@@ -629,4 +634,41 @@ async def platform_overview_stats(request: Request, user: Annotated[Identity, De
              (SELECT COALESCE(SUM(amount_cents),0) FROM public.finance_ledger)::bigint commission_balance_cents
     """)
     return dict(row)
+
+
+class ApplicationActivation(BaseModel):
+    token:str=Field(min_length=30,max_length=256)
+    password:str=Field(min_length=12,max_length=128)
+
+@app.get("/api/public/organizer-application-status")
+async def organizer_application_status(token:str,request:Request):
+    if not 30<=len(token)<=256:raise HTTPException(404,"Solicitação não encontrada")
+    digest=__import__("hashlib").sha256(token.encode()).hexdigest()
+    row=await request.app.state.pool.fetchrow("""SELECT a.status,a.organization_name,a.id
+        FROM public.organizer_application_access t
+        JOIN public.organizer_applications a ON a.id=t.application_id
+        WHERE t.token_hash=$1""",digest)
+    if not row:raise HTTPException(404,"Link de acompanhamento inválido")
+    return {"status":row["status"],"organization_name":row["organization_name"]}
+
+@app.post("/api/public/organizer-application-activate")
+async def activate_organizer_application(p:ApplicationActivation,request:Request):
+    trusted_request(request)
+    digest=__import__("hashlib").sha256(p.token.encode()).hexdigest()
+    record=await request.app.state.pool.fetchrow("""SELECT a.email,a.contact_name,a.status
+        FROM public.organizer_application_access t
+        JOIN public.organizer_applications a ON a.id=t.application_id
+        WHERE t.token_hash=$1""",digest)
+    if not record:raise HTTPException(404,"Link inválido")
+    if record["status"]!="approved":raise HTTPException(409,"A organização ainda não foi aprovada")
+    try:
+        async with httpx.AsyncClient(timeout=12,follow_redirects=False) as client:
+            upstream=await client.post(f"{NEON_AUTH_URL}/sign-up/email",
+                json={"email":record["email"],"name":record["contact_name"],"password":p.password},
+                headers={"origin":FRONTEND_ORIGIN,"content-type":"application/json"})
+    except httpx.RequestError:
+        raise HTTPException(503,"Cadastro de acesso temporariamente indisponível")
+    if upstream.status_code not in (200,201):
+        raise HTTPException(409,"A conta já pode existir. Use Entrar ou Recuperar senha com o e-mail informado.")
+    return {"ok":True,"verification_required":True}
 
