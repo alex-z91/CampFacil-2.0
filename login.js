@@ -7,8 +7,11 @@ const submit = form.querySelector('button[type="submit"]');
 document.querySelector('#toggle').addEventListener('click', () => {
   const field = document.querySelector('#password');
   field.type = field.type === 'password' ? 'text' : 'password';
+  const toggle = document.querySelector('#toggle');
+  toggle.setAttribute('aria-pressed', String(field.type === 'text'));
+  toggle.setAttribute('aria-label', field.type === 'text' ? 'Ocultar senha' : 'Mostrar senha');
 });
-function feedback(message) { status.textContent = message; }
+function feedback(message) { status.textContent = message; status.dataset.state = /erro|inválid|indisponível|recusou|não reconhecid|não possui|não foi possível|ausente/i.test(message) ? 'error' : /validado|redirecionando/i.test(message) ? 'success' : 'idle'; }
 form.addEventListener('submit', async event => {
   event.preventDefault();
   submit.disabled = true;
@@ -43,7 +46,7 @@ form.addEventListener('submit', async event => {
       feedback('Acesso de organizador validado. Redirecionando...');
       window.location.assign('admin.html');
     } else {
-      feedback('Sua identidade foi confirmada, mas você ainda não possui permissões ativas no MEUCAMP.');
+      feedback('Sua identidade foi confirmada, mas você ainda não possui permissões ativas na Arena Pro.');
     }
   } catch (error) {
     feedback(error instanceof TypeError
