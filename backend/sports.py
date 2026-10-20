@@ -608,3 +608,9 @@ async def public_participants(event_id:uuid.UUID,request:Request):
         AND e.payment_status IN ('external_confirmed','online_confirmed','complimentary')
       ORDER BY c.modality,c.name,c.belt,a.full_name LIMIT 5000""",event_id)
     return {"event":dict(event),"participants":[dict(r) for r in rows]}
+
+@router.get("/public/events")
+async def public_events(request:Request):
+    rows=await request.app.state.pool.fetch("""SELECT id::text,name,event_date,city FROM public.sport_events
+       WHERE status='published' ORDER BY event_date DESC LIMIT 100""")
+    return {"items":[dict(r) for r in rows]}
