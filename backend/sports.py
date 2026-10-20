@@ -617,6 +617,7 @@ async def view_brackets(event_id:uuid.UUID,organizer_id:uuid.UUID,request:Reques
     await authorized(request,organizer_id,"organizer.events.read")
     rows=await request.app.state.pool.fetch("""SELECT b.id::text bracket_id,b.status bracket_status,
        c.name category,c.belt,c.modality,m.round_number,m.position,m.status match_status,
+       m.id::text match_id,m.red_entry_id::text red_entry_id,m.blue_entry_id::text blue_entry_id,m.winner_entry_id::text winner_entry_id,ra.team red_team,ba.team blue_team,
        ra.full_name red_name,ba.full_name blue_name
        FROM public.sport_brackets b JOIN public.sport_categories c ON c.id=b.category_id
        JOIN public.sport_bracket_matches m ON m.bracket_id=b.id
@@ -664,3 +665,53 @@ async def set_public_roster(event_id:uuid.UUID,p:PublicRosterSetting,request:Req
         await conn.execute("""INSERT INTO public.finance_audit(organizer_id,actor_user_id,action,reference_id)
            VALUES($1,$2,$3,$4)""",p.organizer_id,user.user_id,"sport_public_roster_enabled" if p.enabled else "sport_public_roster_disabled",event_id)
     return {"ok":True,"enabled":p.enabled}
+
+class BracketSwap(BaseModel):
+    organizer_id:uuid.UUID
+    first_match_id:uuid.UUID
+    first_side:Literal["red","blue"]
+    second_match_id:uuid.UUID
+    second_side:Literal["red","blue"]
+
+@router.post("/brackets/{bracket_id}/swap")
+async def swap_bracket_slots(bracket_id:uuid.UUID,p:BracketSwap,request:Request):
+    require_origin(request)
+    user=await authorized(request,p.organizer_id,"organizer.events.manage")
+    if p.first_match_id==p.second_match_id and p.first_side==p.second_side:
+        raise HTTPException(422,"Escolha duas posições diferentes")
+    async with request.app.state.pool.acquire() as conn:
+      async with conn.transaction():
+        bracket=await conn.fetchrow("""SELECT id,event_id,status FROM public.sport_brackets
+            WHERE id=$1 AND organizer_id=$2 FOR UPDATE""",bracket_id,p.organizer_id)
+        if not bracket:raise HTTPException(404,"Chave não encontrada")
+        if bracket["status"]!="draft":raise HTTPException(409,"Chave publicada: alterações bloqueadas")
+        matches=await conn.fetch("""SELECT id,round_number,red_entry_id,blue_entry_id
+            FROM public.sport_bracket_matches WHERE bracket_id=$1 AND id=ANY($2::uuid[])
+            ORDER BY id FOR UPDATE""",bracket_id,[p.first_match_id,p.second_match_id])
+        if len(matches)!=(1 if p.first_match_id==p.second_match_id else 2) or any(m["round_number"]!=1 for m in matches):
+            raise HTTPException(422,"Só é possível trocar atletas na primeira rodada da mesma chave")
+        lookup={m["id"]:m for m in matches}
+        a=lookup[p.first_match_id][p.first_side+"_entry_id"]
+        b=lookup[p.second_match_id][p.second_side+"_entry_id"]
+        if a is None or b is None:raise HTTPException(422,"Selecione duas posições ocupadas")
+        # Swapping participants cannot create a second entry or alter payment records.
+        updates=[(p.first_match_id,p.first_side,b),(p.second_match_id,p.second_side,a)]
+        for match_id,side,value in updates:
+            await conn.execute("UPDATE public.sport_bracket_matches SET "+side+"_entry_id=$1 WHERE id=$2",value,match_id)
+        # Recalculate automatic BYEs and their seeded advancement slots.
+        opening=await conn.fetch("""SELECT position,red_entry_id,blue_entry_id FROM public.sport_bracket_matches
+            WHERE bracket_id=$1 AND round_number=1 ORDER BY position""",bracket_id)
+        for m in opening:
+            is_bye=(m["red_entry_id"] is None)!=(m["blue_entry_id"] is None)
+            winner=(m["red_entry_id"] or m["blue_entry_id"]) if is_bye else None
+            await conn.execute("""UPDATE public.sport_bracket_matches SET status=$1,winner_entry_id=$2
+                WHERE bracket_id=$3 AND round_number=1 AND position=$4""",
+                "bye" if is_bye else "scheduled",winner,bracket_id,m["position"])
+            next_position=(m["position"]+1)//2
+            side="red" if m["position"]%2 else "blue"
+            await conn.execute("UPDATE public.sport_bracket_matches SET "+side+"_entry_id=$1 WHERE bracket_id=$2 AND round_number=2 AND position=$3",
+                winner,bracket_id,next_position)
+        await conn.execute("""INSERT INTO public.finance_audit(organizer_id,actor_user_id,action,reference_id,details)
+            VALUES($1,$2,'sport_bracket_slots_swapped',$3,$4)""",
+            p.organizer_id,user.user_id,bracket_id,str(p.first_match_id)+":"+p.first_side+" <> "+str(p.second_match_id)+":"+p.second_side)
+    return {"ok":True}
