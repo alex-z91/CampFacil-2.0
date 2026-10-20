@@ -67,7 +67,7 @@ async def create_event(p:EventIn,request:Request):
 @router.get("/events/{organizer_id}")
 async def list_events(organizer_id:uuid.UUID,request:Request):
     await authorized(request,organizer_id,"organizer.events.read")
-    rows=await request.app.state.pool.fetch("""SELECT id::text,name,event_date,city,status,has_gi,has_nogi,has_absolute,registration_deadline,registration_closed_at FROM public.sport_events
+    rows=await request.app.state.pool.fetch("""SELECT id::text,name,event_date,city,status,has_gi,has_nogi,has_absolute,registration_deadline,registration_closed_at,public_roster_enabled FROM public.sport_events
         WHERE organizer_id=$1 ORDER BY event_date DESC LIMIT 100""",organizer_id)
     return {"items":[dict(row) for row in rows]}
 
@@ -599,7 +599,7 @@ async def view_brackets(event_id:uuid.UUID,organizer_id:uuid.UUID,request:Reques
 async def public_participants(event_id:uuid.UUID,request:Request):
     # Public output intentionally excludes bracket structure, payment and private athlete data.
     event=await request.app.state.pool.fetchrow("""SELECT id::text,name,event_date,city
-        FROM public.sport_events WHERE id=$1 AND status='published'""",event_id)
+        FROM public.sport_events WHERE id=$1 AND public_roster_enabled=true AND status<>'cancelled'""",event_id)
     if not event:raise HTTPException(404,"Evento não está disponível para consulta pública")
     rows=await request.app.state.pool.fetch("""SELECT a.full_name,c.name category,c.belt,c.modality,c.sex
       FROM public.sport_entries e JOIN public.sport_athletes a ON a.id=e.athlete_id
@@ -612,5 +612,22 @@ async def public_participants(event_id:uuid.UUID,request:Request):
 @router.get("/public/events")
 async def public_events(request:Request):
     rows=await request.app.state.pool.fetch("""SELECT id::text,name,event_date,city FROM public.sport_events
-       WHERE status='published' ORDER BY event_date DESC LIMIT 100""")
+       WHERE public_roster_enabled=true AND status<>'cancelled' ORDER BY event_date DESC LIMIT 100""")
     return {"items":[dict(r) for r in rows]}
+
+class PublicRosterSetting(BaseModel):
+    organizer_id:uuid.UUID
+    enabled:bool
+
+@router.post("/events/{event_id}/public-roster")
+async def set_public_roster(event_id:uuid.UUID,p:PublicRosterSetting,request:Request):
+    require_origin(request)
+    user=await authorized(request,p.organizer_id,"organizer.events.manage")
+    async with request.app.state.pool.acquire() as conn:
+      async with conn.transaction():
+        row=await conn.fetchrow("""UPDATE public.sport_events SET public_roster_enabled=$1
+            WHERE id=$2 AND organizer_id=$3 AND status<>'cancelled' RETURNING id""",p.enabled,event_id,p.organizer_id)
+        if not row:raise HTTPException(404,"Evento indisponível")
+        await conn.execute("""INSERT INTO public.finance_audit(organizer_id,actor_user_id,action,reference_id)
+           VALUES($1,$2,$3,$4)""",p.organizer_id,user.user_id,"sport_public_roster_enabled" if p.enabled else "sport_public_roster_disabled",event_id)
+    return {"ok":True,"enabled":p.enabled}
