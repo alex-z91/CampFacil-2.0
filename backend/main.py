@@ -481,6 +481,44 @@ async def master_create_application(payload: OrganizerApplicationIn, request: Re
     return await submit_application(request.app.state.pool, payload, "master")
 
 
+@app.post("/api/platform/organizers/create-with-invite", status_code=201)
+async def master_create_organizer_with_invite(payload: OrganizerApplicationIn,
+    request: Request, user: Annotated[Identity, Depends(authenticated)]):
+    """Create an approved organization and a single-use secure invitation.
+    Password is set by the invited user through Neon Auth, not by the Master.
+    """
+    trusted_request(request)
+    pool=request.app.state.pool
+    if not await has_platform_role(pool,user.user_id,"platform.organizers.manage"):
+        raise HTTPException(403,"Acesso Master necessário")
+    p=normalize_application(payload)
+    import secrets as _secrets,hashlib as _hashlib,uuid as _uuid
+    token=_secrets.token_urlsafe(40)
+    digest=_hashlib.sha256(token.encode()).hexdigest()
+    async with pool.acquire() as conn:
+      async with conn.transaction():
+        exists=await conn.fetchval("""SELECT 1 FROM public.organizer_applications
+          WHERE lower(email)=lower($1) AND status IN ('requested','reviewing','approved')""",p["email"])
+        if exists:raise HTTPException(409,"Já existe cadastro ou solicitação para este e-mail.")
+        oid=await conn.fetchval("INSERT INTO public.organizers(name,status) VALUES($1,'draft') RETURNING id",p["organization_name"])
+        aid=await conn.fetchval("""INSERT INTO public.organizer_applications
+          (organization_name,contact_name,email,phone,city,state,document_number,source,status,
+           organizer_id,reviewed_by,reviewed_at)
+          VALUES($1,$2,$3,$4,$5,$6,$7,'master','approved',$8,$9,now()) RETURNING id""",
+          p["organization_name"],p["contact_name"],p["email"],p["phone"],p["city"],
+          p["state"],p["document_number"],oid,user.user_id)
+        await conn.execute("""INSERT INTO public.access_invites
+          (email,scope,organizer_id,role,expires_at,token_hash,application_id)
+          VALUES($1,'organizer',$2,'admin',now()+interval '7 days',$3,$4)""",
+          p["email"],oid,digest,aid)
+        await conn.execute("""INSERT INTO public.organizer_onboarding_audit
+          (application_id,organizer_id,actor_user_id,event)
+          VALUES($1,$2,$3,'master_created_organizer')""",aid,oid,user.user_id)
+    return {"ok":True,"organizer_id":str(oid),
+            "invite_url":FRONTEND_ORIGIN+"/aceitar-convite.html?token="+token,
+            "message":"Organização criada. Envie o convite de ativação ao responsável."}
+
+
 @app.get("/api/platform/organizer-applications")
 async def master_list_applications(request: Request,
                                    user: Annotated[Identity, Depends(authenticated)]):
