@@ -38,6 +38,26 @@ async def authorized(request, organizer_id, permission="organizer.finance.read")
     pool=request.app.state.pool
     if await has_platform_role(pool,user.user_id,"platform.organizers.manage"):
         return user
+    # Draft accounts can prepare an event, but cannot create registrations,
+    # confirm payments, operate brackets or perform other privileged writes.
+    draft_allowed = (
+        (permission == "organizer.events.manage" and request.method == "POST"
+         and request.url.path == "/api/sports/events")
+        or (permission == "organizer.events.read" and request.method == "GET"
+            and request.url.path.startswith(("/api/sports/events/",
+                                              "/api/sports/athletes/",
+                                              "/api/sports/categories/",
+                                              "/api/sports/entries/")))
+    )
+    if draft_allowed:
+        exists = await pool.fetchval("""
+            SELECT 1 FROM public.organizer_members m
+            JOIN public.organizers o ON o.id=m.organizer_id
+            WHERE m.user_id=$1 AND m.organizer_id=$2
+              AND m.status='active' AND m.role='admin' AND o.status='draft'
+        """,user.user_id,organizer_id)
+        if exists:
+            return user
     if not await has_organizer_role(pool,user.user_id,str(organizer_id),permission):
         raise HTTPException(403,"Sem permissão financeira nesta organização")
     return user
