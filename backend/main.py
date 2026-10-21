@@ -418,6 +418,31 @@ async def organizer_self_signup(payload: OrganizerSelfSignup, request: Request):
             "tracking_url":result["tracking_url"]}
 
 
+@app.post("/api/auth/resend-verification")
+async def resend_organizer_verification(request: Request,
+    user: Annotated[Identity, Depends(authenticated)]):
+    trusted_request(request)
+    if user.email_verified:
+        return {"ok":True,"already_verified":True}
+    cookie_name=request.cookies.get("meucamp_session_name","better-auth.session_token")
+    token=request.cookies.get("meucamp_session")
+    if not token or not valid_neon_cookie_name(cookie_name):
+        raise HTTPException(401,"Entre novamente para confirmar seu e-mail.")
+    try:
+        async with httpx.AsyncClient(timeout=12,follow_redirects=False) as client:
+            res=await client.post(f"{NEON_AUTH_URL}/send-verification-email",
+                json={"email":user.email,"callbackURL":FRONTEND_ORIGIN+"/completar-organizacao.html"},
+                headers={"origin":FRONTEND_ORIGIN,"content-type":"application/json",
+                         "cookie":f"{cookie_name}={token}"})
+    except httpx.RequestError:
+        raise HTTPException(503,"O serviço de verificação está indisponível. Tente mais tarde.")
+    if res.status_code==429:
+        raise HTTPException(429,"Muitas solicitações. Aguarde antes de tentar novamente.")
+    if res.status_code!=200:
+        raise HTTPException(503,"O envio de verificação não está disponível. Confira a configuração de e-mails do Neon Auth.")
+    return {"ok":True,"message":"Se o provedor estiver configurado, enviamos um novo link de confirmação."}
+
+
 @app.post("/api/organizer-onboarding", status_code=201)
 async def complete_organizer_onboarding(payload: OrganizerApplicationIn, request: Request,
     user: Annotated[Identity, Depends(authenticated)]):
