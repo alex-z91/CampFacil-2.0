@@ -403,8 +403,15 @@ async def organizer_self_signup(payload: OrganizerSelfSignup, request: Request):
         except httpx.RequestError:
             raise HTTPException(503,"Serviço de contas indisponível")
     if upstream.status_code not in (200, 201):
-        raise HTTPException(409 if upstream.status_code in (400,409,422) else 502,
-                            "Não foi possível criar a conta. Verifique os dados ou tente entrar.")
+        # Auth provider details may reveal account enumeration or internal infrastructure.
+        # Provide actionable but safe messages, preserving distinct retryable failures.
+        if upstream.status_code == 429:
+            raise HTTPException(429, "Muitas tentativas de cadastro. Aguarde alguns minutos e tente novamente.")
+        if upstream.status_code in (400, 409, 422):
+            raise HTTPException(409, "O cadastro não foi aceito. Se você já possui uma conta, utilize Entrar ou Recuperar senha. Confira também os requisitos da senha.")
+        if upstream.status_code == 403:
+            raise HTTPException(503, "O serviço de autenticação recusou o cadastro. Entre em contato com o suporte da Arena Pro.")
+        raise HTTPException(502, "Não foi possível concluir o cadastro no serviço de autenticação. Tente novamente mais tarde.")
     result = await submit_application(request.app.state.pool, payload, "self_signup")
     return {"ok":True,"status":"awaiting_email_verification",
             "message":"Conta criada. Confirme seu e-mail e faça login para preparar o campeonato.",
