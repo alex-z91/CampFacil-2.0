@@ -635,11 +635,10 @@ async def public_participants(event_id:uuid.UUID,request:Request):
     event=await request.app.state.pool.fetchrow("""SELECT id::text,name,event_date,city
         FROM public.sport_events WHERE id=$1 AND public_roster_enabled=true AND status<>'cancelled'""",event_id)
     if not event:raise HTTPException(404,"Evento não está disponível para consulta pública")
-    rows=await request.app.state.pool.fetch("""SELECT a.full_name,c.name category,c.belt,c.modality,c.sex
+    rows=await request.app.state.pool.fetch("""SELECT a.full_name,c.name category,c.belt,c.modality,c.sex,e.payment_status,e.eligible
       FROM public.sport_entries e JOIN public.sport_athletes a ON a.id=e.athlete_id
       JOIN public.sport_categories c ON c.id=e.category_id
-      WHERE e.event_id=$1 AND e.eligible=true
-        AND e.payment_status IN ('external_confirmed','online_confirmed','complimentary')
+      WHERE e.event_id=$1 AND e.payment_status <> 'cancelled'
       ORDER BY c.modality,c.name,c.belt,a.full_name LIMIT 5000""",event_id)
     return {"event":dict(event),"participants":[dict(r) for r in rows]}
 
