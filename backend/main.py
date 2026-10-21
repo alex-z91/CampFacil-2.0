@@ -418,6 +418,29 @@ async def organizer_self_signup(payload: OrganizerSelfSignup, request: Request):
             "tracking_url":result["tracking_url"]}
 
 
+@app.post("/api/organizer-onboarding", status_code=201)
+async def complete_organizer_onboarding(payload: OrganizerApplicationIn, request: Request,
+    user: Annotated[Identity, Depends(authenticated)]):
+    trusted_request(request)
+    if not user.email_verified:
+        raise HTTPException(403, "Confirme seu e-mail antes de continuar.")
+    data = normalize_application(payload)
+    if data["email"] != user.email.strip().lower():
+        raise HTTPException(422, "Use o e-mail da conta conectada.")
+    pool = request.app.state.pool
+    current = await pool.fetchval(
+        "SELECT 1 FROM public.organizer_members WHERE user_id=$1 AND status='active' LIMIT 1", user.user_id)
+    if current:
+        raise HTTPException(409, "Você já possui uma organização. Atualize o painel.")
+    pending = await pool.fetchval(
+        "SELECT 1 FROM public.organizer_applications WHERE lower(email)=lower($1) AND status IN ('requested','reviewing','approved') LIMIT 1", user.email)
+    if pending:
+        raise HTTPException(409, "Existe uma solicitação para este e-mail. Entre em contato com o suporte.")
+    await submit_application(pool, payload, "self_signup")
+    await provision_verified_organizer(pool, user)
+    return {"ok": True, "status": "draft"}
+
+
 @app.post("/api/public/organizer-applications", status_code=201)
 async def create_application(payload: OrganizerApplicationIn, request: Request):
     trusted_request(request)
