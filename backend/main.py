@@ -150,7 +150,7 @@ async def me(user: Annotated[Identity, Depends(authenticated)], request: Request
         WHERE m.user_id=$1 AND m.status='active' AND o.status IN ('draft','active')
         ORDER BY o.name
     """, user.user_id)
-    return {"email": user.email, "master": master,
+    return {"email": user.email, "email_verified": user.email_verified, "master": master,
             "organizations": [dict(row) for row in rows]}
 
 
