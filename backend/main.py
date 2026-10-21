@@ -101,7 +101,7 @@ async def provision_verified_organizer(pool, user: Identity) -> int:
         async with conn.transaction():
             apps = await conn.fetch("""
                 SELECT * FROM public.organizer_applications
-                WHERE status='approved' AND lower(email)=lower($1)
+                WHERE status IN ('requested','reviewing','approved') AND lower(email)=lower($1)
                 ORDER BY created_at FOR UPDATE
             """, user.email.strip())
             for app in apps:
@@ -125,7 +125,7 @@ async def provision_verified_organizer(pool, user: Identity) -> int:
                 if member["role"] != "admin" or member["status"] != "active":
                     continue
                 await conn.execute(
-                    "UPDATE public.organizers SET status='active' WHERE id=$1 AND status='draft'", oid)
+                    "UPDATE public.organizers SET status='active' WHERE id=$1 AND status='draft' AND EXISTS (SELECT 1 FROM public.organizer_applications WHERE id=$2 AND status='approved')", oid, app["id"])
                 if not await conn.fetchval("""
                     SELECT 1 FROM public.organizer_onboarding_audit
                     WHERE application_id=$1 AND event='verified_owner_activated' LIMIT 1
@@ -145,9 +145,9 @@ async def me(user: Annotated[Identity, Depends(authenticated)], request: Request
     await provision_verified_organizer(pool, user)
     master = await has_platform_role(pool, user.user_id, "platform.organizers.read")
     rows = await pool.fetch("""
-        SELECT m.organizer_id::text AS id, o.name, m.role
+        SELECT m.organizer_id::text AS id, o.name, o.status, m.role
         FROM public.organizer_members m JOIN public.organizers o ON o.id=m.organizer_id
-        WHERE m.user_id=$1 AND m.status='active' AND o.status='active'
+        WHERE m.user_id=$1 AND m.status='active' AND o.status IN ('draft','active')
         ORDER BY o.name
     """, user.user_id)
     return {"email": user.email, "master": master,
@@ -376,6 +376,36 @@ async def submit_application(pool, data: OrganizerApplicationIn, source: str):
         VALUES($1,$2)""",__import__("uuid").UUID(row["id"]),access_hash)
     return {"ok":True,"id":row["id"],"status":"requested",
             "tracking_url":FRONTEND_ORIGIN+"/acompanhar-acesso.html?token="+access_token}
+
+
+class OrganizerSelfSignup(OrganizerApplicationIn):
+    password: str = Field(min_length=12, max_length=128)
+
+
+@app.post("/api/public/organizer-signup", status_code=201)
+async def organizer_self_signup(payload: OrganizerSelfSignup, request: Request):
+    """Register identity via Neon Auth, then open an approval request.
+    Email verification is required before linking this identity to a draft organizer.
+    Approval alone controls publication, never account registration.
+    """
+    trusted_request(request)
+    normalized = normalize_application(payload)
+    async with httpx.AsyncClient(timeout=12, follow_redirects=False) as client:
+        try:
+            upstream = await client.post(
+                f"{NEON_AUTH_URL}/sign-up/email",
+                json={"email":normalized["email"],"password":payload.password,
+                      "name":normalized["contact_name"]},
+                headers={"origin":FRONTEND_ORIGIN,"content-type":"application/json"})
+        except httpx.RequestError:
+            raise HTTPException(503,"Serviço de contas indisponível")
+    if upstream.status_code not in (200, 201):
+        raise HTTPException(409 if upstream.status_code in (400,409,422) else 502,
+                            "Não foi possível criar a conta. Verifique os dados ou tente entrar.")
+    result = await submit_application(request.app.state.pool, payload, "self_signup")
+    return {"ok":True,"status":"awaiting_email_verification",
+            "message":"Conta criada. Confirme seu e-mail e faça login para preparar o campeonato.",
+            "tracking_url":result["tracking_url"]}
 
 
 @app.post("/api/public/organizer-applications", status_code=201)
