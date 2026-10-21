@@ -93,7 +93,7 @@ async def health():
 
 
 async def provision_verified_organizer(pool, user: Identity) -> int:
-    """Provision approved organizers only for authenticated, email-verified owners."""
+    """Link verified self-signups in draft; legacy applications require approval."""
     if not user.email_verified:
         return 0
     count = 0
@@ -101,7 +101,7 @@ async def provision_verified_organizer(pool, user: Identity) -> int:
         async with conn.transaction():
             apps = await conn.fetch("""
                 SELECT * FROM public.organizer_applications
-                WHERE status IN ('requested','reviewing','approved') AND lower(email)=lower($1)
+                WHERE (status='approved' OR (source='self_signup' AND status IN ('requested','reviewing'))) AND lower(email)=lower($1)
                 ORDER BY created_at FOR UPDATE
             """, user.email.strip())
             for app in apps:
@@ -551,6 +551,8 @@ async def master_review_application(application_id: str, payload: ApplicationRev
                 SET status=$1, reviewed_by=$2, reviewed_at=now(), organizer_id=COALESCE($4,organizer_id)
                 WHERE id=$3 RETURNING id::text,status,organizer_id::text
             """, payload.status, user.user_id, parsed_id, oid)
+            if payload.status == "approved" and app_row["source"]=="self_signup":
+                await conn.execute("""UPDATE public.organizers o SET status='active' WHERE o.id=$1 AND o.status='draft' AND EXISTS (SELECT 1 FROM public.organizer_members m WHERE m.organizer_id=o.id AND m.role='admin' AND m.status='active')""",oid)
             if payload.status == "approved":
                 await conn.execute("""
                     INSERT INTO public.organizer_onboarding_audit
