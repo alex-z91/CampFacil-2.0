@@ -46,7 +46,7 @@ form.addEventListener('submit', async event => {
       feedback('Acesso de organizador validado. Redirecionando...');
       window.location.assign('admin.html');
     } else {
-      feedback('Sua identidade foi confirmada, mas você ainda não possui permissões ativas na Arena Pro.');
+      feedback('Sua conta foi autenticada. Complete os dados da organização para preparar seu primeiro campeonato.'); const link=document.createElement('a');link.href='completar-organizacao.html';link.textContent='Completar cadastro de organizador →';link.style.cssText='display:block;margin-top:12px;font-weight:700;color:#b75b00;text-decoration:underline';status.append(link);
     }
   } catch (error) {
     feedback(error instanceof TypeError
