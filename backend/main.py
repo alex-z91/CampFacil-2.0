@@ -390,6 +390,9 @@ async def organizer_self_signup(payload: OrganizerSelfSignup, request: Request):
     """
     trusted_request(request)
     normalized = normalize_application(payload)
+    existing = await request.app.state.pool.fetchval("SELECT 1 FROM public.organizer_applications WHERE lower(email)=lower($1) AND status IN ('requested','reviewing','approved')",normalized["email"])
+    if existing:
+        raise HTTPException(409,"Já existe solicitação para este e-mail. Entre na sua conta ou acompanhe sua solicitação.")
     async with httpx.AsyncClient(timeout=12, follow_redirects=False) as client:
         try:
             upstream = await client.post(
@@ -555,7 +558,9 @@ async def master_review_application(application_id: str, payload: ApplicationRev
                     VALUES($1,$2,$3,'organization_prepared')
                 """, parsed_id, oid, user.user_id)
     notification="not_applicable";activation_url=None
-    if payload.status=="approved":
+    if payload.status=="approved" and app_row["source"]=="self_signup":
+        notification="existing_account_approved"
+    elif payload.status=="approved":
         token=__import__("secrets").token_urlsafe(40)
         digest=__import__("hashlib").sha256(token.encode()).hexdigest()
         existing=await request.app.state.pool.fetchval("SELECT id FROM public.access_invites WHERE application_id=$1",parsed_id)
