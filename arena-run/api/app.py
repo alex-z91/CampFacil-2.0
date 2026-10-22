@@ -42,7 +42,7 @@ class Registration(db.Model):
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
 def create_app():
-    app = Flask(__name__)
+    app = Flask(__name__, static_folder="../", static_url_path="/arena-run")
     app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get("DATABASE_URL", "sqlite:///arena_run_dev.db").replace("postgres://", "postgresql://", 1)
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     secret = os.environ.get("SECRET_KEY")
